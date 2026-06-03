@@ -1066,6 +1066,53 @@ function setView(view) {
   dom.panelTrack.dataset.view = view;
 }
 
+function hasOpenSheet() {
+  return Boolean(document.querySelector(".sheet.is-open"));
+}
+
+function beginSwipeTracking(x, y, pointerId = null) {
+  if (hasOpenSheet()) return;
+  pointerStart = {
+    x,
+    y,
+    pointerId,
+    axis: "",
+  };
+}
+
+function updateSwipeTracking(x, y, event) {
+  if (!pointerStart) return;
+  const dx = x - pointerStart.x;
+  const dy = y - pointerStart.y;
+
+  if (!pointerStart.axis) {
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+    pointerStart.axis = Math.abs(dx) > Math.abs(dy) * 1.15 ? "x" : "y";
+  }
+
+  if (pointerStart.axis === "x" && event?.cancelable) {
+    event.preventDefault();
+  }
+}
+
+function finishSwipeTracking(x, y) {
+  if (!pointerStart) return;
+  const dx = x - pointerStart.x;
+  const dy = y - pointerStart.y;
+  pointerStart = null;
+
+  if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy) * 1.15) return;
+  if (dx < 0 && currentView === "chat") {
+    setView("toolbox");
+  } else if (dx > 0 && currentView === "toolbox") {
+    setView("chat");
+  }
+}
+
+function cancelSwipeTracking() {
+  pointerStart = null;
+}
+
 function autoGrowTextarea() {
   dom.messageInput.style.height = "auto";
   dom.messageInput.style.height = `${Math.min(dom.messageInput.scrollHeight, 140)}px`;
@@ -1568,30 +1615,64 @@ function bindSwipeNavigation() {
     "pointerdown",
     (event) => {
       if (event.pointerType === "mouse" && event.button !== 0) return;
-      pointerStart = {
-        x: event.clientX,
-        y: event.clientY,
-      };
+      beginSwipeTracking(event.clientX, event.clientY, event.pointerId);
     },
     { passive: true }
+  );
+
+  surface.addEventListener(
+    "pointermove",
+    (event) => {
+      if (!pointerStart) return;
+      if (pointerStart.pointerId !== null && event.pointerId !== pointerStart.pointerId) return;
+      updateSwipeTracking(event.clientX, event.clientY, event);
+    },
+    { passive: false }
   );
 
   surface.addEventListener(
     "pointerup",
     (event) => {
       if (!pointerStart) return;
-      const dx = event.clientX - pointerStart.x;
-      const dy = event.clientY - pointerStart.y;
-      pointerStart = null;
-      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;
-      if (dx < 0 && currentView === "chat") {
-        setView("toolbox");
-      } else if (dx > 0 && currentView === "toolbox") {
-        setView("chat");
-      }
+      if (pointerStart.pointerId !== null && event.pointerId !== pointerStart.pointerId) return;
+      finishSwipeTracking(event.clientX, event.clientY);
     },
     { passive: true }
   );
+
+  surface.addEventListener("pointercancel", cancelSwipeTracking, { passive: true });
+
+  surface.addEventListener(
+    "touchstart",
+    (event) => {
+      const touch = event.changedTouches?.[0];
+      if (!touch) return;
+      beginSwipeTracking(touch.clientX, touch.clientY, "touch");
+    },
+    { passive: true }
+  );
+
+  surface.addEventListener(
+    "touchmove",
+    (event) => {
+      const touch = event.changedTouches?.[0];
+      if (!touch) return;
+      updateSwipeTracking(touch.clientX, touch.clientY, event);
+    },
+    { passive: false }
+  );
+
+  surface.addEventListener(
+    "touchend",
+    (event) => {
+      const touch = event.changedTouches?.[0];
+      if (!touch) return;
+      finishSwipeTracking(touch.clientX, touch.clientY);
+    },
+    { passive: true }
+  );
+
+  surface.addEventListener("touchcancel", cancelSwipeTracking, { passive: true });
 }
 
 function bindSheetClosers() {
