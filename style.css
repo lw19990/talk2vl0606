@@ -182,6 +182,7 @@ button {
 }
 
 .chat-title-wrap {
+  flex: 1;
   min-width: 0;
 }
 

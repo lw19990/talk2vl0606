@@ -68,6 +68,7 @@ const dom = {
   memorySheet: document.getElementById("memory-sheet"),
   worldbookSheet: document.getElementById("worldbook-sheet"),
   chatSettingsTrigger: document.getElementById("chat-settings-trigger"),
+  toolboxToggle: document.getElementById("toolbox-toggle"),
   avatarPreview: document.getElementById("avatar-preview"),
   avatarInput: document.getElementById("avatar-input"),
   partnerName: document.getElementById("partner-name"),
@@ -1611,6 +1612,8 @@ async function saveApiSettings() {
 
 function bindSwipeNavigation() {
   const surface = document.querySelector(".app-shell");
+  const touchSurface = dom.panelTrack || surface;
+  if (!surface || !touchSurface) return;
   surface.addEventListener(
     "pointerdown",
     (event) => {
@@ -1642,7 +1645,7 @@ function bindSwipeNavigation() {
 
   surface.addEventListener("pointercancel", cancelSwipeTracking, { passive: true });
 
-  surface.addEventListener(
+  touchSurface.addEventListener(
     "touchstart",
     (event) => {
       const touch = event.changedTouches?.[0];
@@ -1652,7 +1655,7 @@ function bindSwipeNavigation() {
     { passive: true }
   );
 
-  surface.addEventListener(
+  touchSurface.addEventListener(
     "touchmove",
     (event) => {
       const touch = event.changedTouches?.[0];
@@ -1662,7 +1665,7 @@ function bindSwipeNavigation() {
     { passive: false }
   );
 
-  surface.addEventListener(
+  touchSurface.addEventListener(
     "touchend",
     (event) => {
       const touch = event.changedTouches?.[0];
@@ -1672,7 +1675,7 @@ function bindSwipeNavigation() {
     { passive: true }
   );
 
-  surface.addEventListener("touchcancel", cancelSwipeTracking, { passive: true });
+  touchSurface.addEventListener("touchcancel", cancelSwipeTracking, { passive: true });
 }
 
 function bindSheetClosers() {
@@ -1698,6 +1701,7 @@ function setupEvents() {
   bindSheetClosers();
   bindSwipeNavigation();
 
+  dom.toolboxToggle?.addEventListener("click", () => setView("toolbox"));
   dom.chatSettingsTrigger.addEventListener("click", () => openSheet(dom.profileSheet));
   dom.saveProfileBtn.addEventListener("click", saveProfile);
   dom.saveApiBtn.addEventListener("click", saveApiSettings);
