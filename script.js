@@ -68,7 +68,6 @@ const dom = {
   memorySheet: document.getElementById("memory-sheet"),
   worldbookSheet: document.getElementById("worldbook-sheet"),
   chatSettingsTrigger: document.getElementById("chat-settings-trigger"),
-  toolboxToggle: document.getElementById("toolbox-toggle"),
   avatarPreview: document.getElementById("avatar-preview"),
   avatarInput: document.getElementById("avatar-input"),
   partnerName: document.getElementById("partner-name"),
@@ -1701,7 +1700,6 @@ function setupEvents() {
   bindSheetClosers();
   bindSwipeNavigation();
 
-  dom.toolboxToggle?.addEventListener("click", () => setView("toolbox"));
   dom.chatSettingsTrigger.addEventListener("click", () => openSheet(dom.profileSheet));
   dom.saveProfileBtn.addEventListener("click", saveProfile);
   dom.saveApiBtn.addEventListener("click", saveApiSettings);
