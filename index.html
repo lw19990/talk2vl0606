@@ -6,7 +6,15 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
+    <meta name="theme-color" content="#faf9f5" />
+    <meta name="application-name" content="AI 聊天器" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="AI 聊天器" />
     <title>AI 聊天器</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
@@ -305,6 +313,64 @@
             <span class="memory-count" id="memory-count">0 条</span>
           </div>
           <div class="memory-list" id="memory-list"></div>
+        </section>
+      </div>
+    </div>
+
+    <div class="sheet settings-sheet" id="worldbook-sheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-close-worldbook></div>
+      <div class="sheet-panel worldbook-panel">
+        <button class="sheet-close" type="button" data-close-worldbook>×</button>
+        <p class="sheet-kicker dark-text">World Book</p>
+        <h3 class="memory-title">世界书</h3>
+        <p class="memory-hint">
+          世界书默认作为全局通用设定使用。启用后的条目会直接影响 AI 回复，可随时开关。
+        </p>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h4>新增 / 编辑世界书</h4>
+            <button class="text-btn" id="worldbook-form-reset-btn" type="button">
+              清空
+            </button>
+          </div>
+
+          <label class="field">
+            <span>条目名称</span>
+            <input
+              id="worldbook-title"
+              type="text"
+              maxlength="80"
+              placeholder="例如：世界观设定 / 角色关系 / 禁忌规则"
+            />
+          </label>
+
+          <label class="field">
+            <span>条目内容</span>
+            <textarea
+              id="worldbook-content"
+              rows="6"
+              maxlength="6000"
+              placeholder="输入这条世界书的具体内容，启用后会参与 AI 回复。"
+            ></textarea>
+          </label>
+
+          <label class="inline-check">
+            <input id="worldbook-enabled" type="checkbox" checked />
+            <span>保存后立即启用这条世界书</span>
+          </label>
+
+          <button class="primary-save" id="save-worldbook-btn" type="button">
+            保存世界书
+          </button>
+        </section>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h4>已创建世界书</h4>
+            <span class="memory-count" id="worldbook-count">0 条</span>
+          </div>
+          <div class="worldbook-list" id="worldbook-list"></div>
         </section>
       </div>
     </div>

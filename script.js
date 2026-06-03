@@ -49,6 +49,7 @@ const DEFAULT_STATE = {
     temperature: 0.9,
   },
   messages: [],
+  worldbooks: [],
 };
 
 const dom = {
@@ -65,6 +66,7 @@ const dom = {
   profileSheet: document.getElementById("profile-sheet"),
   apiSheet: document.getElementById("api-sheet"),
   memorySheet: document.getElementById("memory-sheet"),
+  worldbookSheet: document.getElementById("worldbook-sheet"),
   chatSettingsTrigger: document.getElementById("chat-settings-trigger"),
   avatarPreview: document.getElementById("avatar-preview"),
   avatarInput: document.getElementById("avatar-input"),
@@ -99,6 +101,13 @@ const dom = {
   memorySearchInput: document.getElementById("memory-search-input"),
   memorySearchBtn: document.getElementById("memory-search-btn"),
   memorySearchResults: document.getElementById("memory-search-results"),
+  worldbookTitle: document.getElementById("worldbook-title"),
+  worldbookContent: document.getElementById("worldbook-content"),
+  worldbookEnabled: document.getElementById("worldbook-enabled"),
+  saveWorldbookBtn: document.getElementById("save-worldbook-btn"),
+  worldbookFormResetBtn: document.getElementById("worldbook-form-reset-btn"),
+  worldbookList: document.getElementById("worldbook-list"),
+  worldbookCount: document.getElementById("worldbook-count"),
 };
 
 let appState = typeof structuredClone === "function"
@@ -110,6 +119,7 @@ let currentView = "chat";
 let pointerStart = null;
 let currentMemoryRoom = "long_term";
 let editingMemoryId = "";
+let editingWorldbookId = "";
 
 const shaderCanvas = document.getElementById("shader-canvas");
 
@@ -166,6 +176,9 @@ function normalizeState(raw) {
       ...(raw?.api || {}),
     },
     messages: Array.isArray(raw?.messages) ? raw.messages : [],
+    worldbooks: Array.isArray(raw?.worldbooks)
+      ? raw.worldbooks.map(normalizeWorldbookRecord).filter((item) => item.content)
+      : [],
   };
 }
 
@@ -213,6 +226,28 @@ function createMemoryId() {
     return window.crypto.randomUUID();
   }
   return `mem_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function createWorldbookId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `wb_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeWorldbookRecord(raw = {}) {
+  const nowTs = Date.now();
+  const createdAt = normalizeTimestamp(raw.created_at, nowTs);
+  const content = String(raw.content || "").trim();
+  const title = String(raw.title || "").trim();
+  return {
+    id: String(raw.id || createWorldbookId()),
+    title: title || `世界书 ${new Date(createdAt).toLocaleDateString("zh-CN")}`,
+    content,
+    enabled: raw.enabled !== false,
+    created_at: createdAt,
+    updated_at: normalizeTimestamp(raw.updated_at, createdAt),
+  };
 }
 
 function vectorMagnitude(vector) {
@@ -608,13 +643,17 @@ function buildSystemPrompt(memoryContext = "") {
   const memoryBlock = memoryContext
     ? `\n\n以下是我本地记忆宫殿中检索到的可参考记忆，请自然吸收，不要逐条复读：\n${memoryContext}`
     : "";
+  const worldbookContext = buildWorldbookContext();
+  const worldbookBlock = worldbookContext
+    ? `\n\n以下是当前已启用的世界书设定，请把它们视为持续生效的通用背景与规则，自然融入回复，不要逐条照抄，不要显得像在宣读设定：\n${worldbookContext}`
+    : "";
 
   return `
 我现在是一个长期陪伴她聊天的人，我始终使用第一人称“我”来表达自己，用第二人称“你”来称呼她。她的名字是：${selfName}。我的名字是：${partnerName}。
 
 如果有角色设定，我会自然地活在这个设定中，不会把设定当成说明书背诵。角色设定：${partnerPrompt || "暂无额外角色设定。"}
 
-关于她的介绍与背景：${selfPrompt || "暂无额外用户设定。"}${memoryBlock}
+关于她的介绍与背景：${selfPrompt || "暂无额外用户设定。"}${worldbookBlock}${memoryBlock}
 
 每次回复时，我都必须同时给出 thinking 和 reply 两个字段，并且严格输出 JSON，不要输出 JSON 之外的任何文字。JSON 结构如下：
 {
@@ -639,6 +678,20 @@ reply 的要求：
 
 如果她的消息很短，也不要因此让思考链变得机械或模板化。始终优先保持真诚、鲜活、自然。
 `.trim();
+}
+
+function buildWorldbookContext() {
+  const worldbooks = Array.isArray(appState.worldbooks) ? appState.worldbooks : [];
+  const enabledItems = worldbooks
+    .map(normalizeWorldbookRecord)
+    .filter((item) => item.enabled && item.content)
+    .sort((left, right) => right.updated_at - left.updated_at);
+
+  if (!enabledItems.length) return "";
+
+  return enabledItems
+    .map((item, index) => `${index + 1}. 【${item.title}】\n${item.content}`)
+    .join("\n\n");
 }
 
 async function buildMemoryContext(messageText) {
@@ -755,6 +808,11 @@ function renderToolGrid() {
         await renderMemoryList();
         openSheet(dom.memorySheet);
       });
+    } else if (name === "世界书") {
+      button.addEventListener("click", async () => {
+        renderWorldbookList();
+        openSheet(dom.worldbookSheet);
+      });
     }
     dom.toolGrid.appendChild(button);
   });
@@ -853,6 +911,135 @@ function openSheet(sheet) {
 function closeSheet(sheet) {
   sheet.classList.remove("is-open");
   sheet.setAttribute("aria-hidden", "true");
+}
+
+function resetWorldbookForm() {
+  editingWorldbookId = "";
+  dom.worldbookTitle.value = "";
+  dom.worldbookContent.value = "";
+  dom.worldbookEnabled.checked = true;
+}
+
+function fillWorldbookForm(worldbook) {
+  editingWorldbookId = worldbook.id;
+  dom.worldbookTitle.value = worldbook.title || "";
+  dom.worldbookContent.value = worldbook.content || "";
+  dom.worldbookEnabled.checked = worldbook.enabled !== false;
+}
+
+function saveWorldbook() {
+  const title = dom.worldbookTitle.value.trim();
+  const content = dom.worldbookContent.value.trim();
+  if (!content) {
+    showTempStatus(dom.saveWorldbookBtn, "请输入世界书内容。");
+    return;
+  }
+
+  const nowTs = Date.now();
+  const existingList = Array.isArray(appState.worldbooks) ? appState.worldbooks.slice() : [];
+  const existingIndex = existingList.findIndex((item) => item.id === editingWorldbookId);
+  const existingRecord = existingIndex >= 0 ? normalizeWorldbookRecord(existingList[existingIndex]) : null;
+  const nextRecord = normalizeWorldbookRecord({
+    ...(existingRecord || {}),
+    id: existingRecord?.id || createWorldbookId(),
+    title: title || `世界书 ${existingList.length + (existingRecord ? 0 : 1)}`,
+    content,
+    enabled: dom.worldbookEnabled.checked,
+    created_at: existingRecord?.created_at || nowTs,
+    updated_at: nowTs,
+  });
+
+  if (existingIndex >= 0) {
+    existingList.splice(existingIndex, 1, nextRecord);
+  } else {
+    existingList.unshift(nextRecord);
+  }
+
+  appState.worldbooks = existingList;
+  resetWorldbookForm();
+  renderWorldbookList();
+  writeState().catch((error) => console.error("保存世界书失败", error));
+  showTempStatus(dom.saveWorldbookBtn, "世界书已保存。");
+}
+
+function toggleWorldbookEnabled(id, enabled) {
+  const list = Array.isArray(appState.worldbooks) ? appState.worldbooks.slice() : [];
+  const index = list.findIndex((item) => item.id === id);
+  if (index < 0) return;
+  const current = normalizeWorldbookRecord(list[index]);
+  list[index] = {
+    ...current,
+    enabled,
+    updated_at: Date.now(),
+  };
+  appState.worldbooks = list;
+  renderWorldbookList();
+  writeState().catch((error) => console.error("更新世界书开关失败", error));
+}
+
+function deleteWorldbook(id) {
+  appState.worldbooks = (Array.isArray(appState.worldbooks) ? appState.worldbooks : []).filter(
+    (item) => item.id !== id
+  );
+  if (editingWorldbookId === id) {
+    resetWorldbookForm();
+  }
+  renderWorldbookList();
+  writeState().catch((error) => console.error("删除世界书失败", error));
+}
+
+function createWorldbookCard(worldbook) {
+  const wrapper = document.createElement("article");
+  wrapper.className = "worldbook-item-card";
+  wrapper.innerHTML = `
+    <div class="worldbook-item-head">
+      <div class="worldbook-item-title-wrap">
+        <h4 class="worldbook-item-title">${escapeHtml(worldbook.title)}</h4>
+        <p class="worldbook-item-time">更新于 ${formatDateTime(worldbook.updated_at)}</p>
+      </div>
+      <label class="worldbook-switch">
+        <input type="checkbox" ${worldbook.enabled ? "checked" : ""} />
+        <span class="worldbook-switch-slider"></span>
+      </label>
+    </div>
+    <div class="worldbook-item-content">${escapeHtml(worldbook.content)}</div>
+    <div class="memory-item-actions">
+      <button class="secondary-btn" type="button" data-action="edit">编辑</button>
+      <button class="secondary-btn" type="button" data-action="delete">删除</button>
+    </div>
+  `;
+
+  wrapper.querySelector('input[type="checkbox"]')?.addEventListener("change", (event) => {
+    toggleWorldbookEnabled(worldbook.id, Boolean(event.target.checked));
+  });
+  wrapper.querySelector('[data-action="edit"]')?.addEventListener("click", () => {
+    fillWorldbookForm(worldbook);
+  });
+  wrapper.querySelector('[data-action="delete"]')?.addEventListener("click", () => {
+    if (!window.confirm("删除这条世界书？")) return;
+    deleteWorldbook(worldbook.id);
+  });
+  return wrapper;
+}
+
+function renderWorldbookList() {
+  const worldbooks = (Array.isArray(appState.worldbooks) ? appState.worldbooks : [])
+    .map(normalizeWorldbookRecord)
+    .filter((item) => item.content)
+    .sort((left, right) => right.updated_at - left.updated_at);
+
+  dom.worldbookList.innerHTML = "";
+  dom.worldbookCount.textContent = `${worldbooks.length} 条`;
+
+  if (!worldbooks.length) {
+    dom.worldbookList.innerHTML =
+      '<div class="memory-empty">还没有创建世界书，保存后会在这里逐条显示。</div>';
+    return;
+  }
+
+  worldbooks.forEach((item) => {
+    dom.worldbookList.appendChild(createWorldbookCard(item));
+  });
 }
 
 function switchProfileTab(nextTab) {
@@ -1420,6 +1607,9 @@ function bindSheetClosers() {
   document.querySelectorAll("[data-close-memory]").forEach((element) => {
     element.addEventListener("click", () => closeSheet(dom.memorySheet));
   });
+  document.querySelectorAll("[data-close-worldbook]").forEach((element) => {
+    element.addEventListener("click", () => closeSheet(dom.worldbookSheet));
+  });
 }
 
 function setupEvents() {
@@ -1477,6 +1667,20 @@ function setupEvents() {
   dom.importMemoryBtn.addEventListener("click", () => dom.memoryImportInput.click());
   dom.exportMemoryBtn.addEventListener("click", exportMemories);
   dom.memoryImportInput.addEventListener("change", handleImportMemories);
+  dom.worldbookFormResetBtn.addEventListener("click", resetWorldbookForm);
+  dom.saveWorldbookBtn.addEventListener("click", saveWorldbook);
+}
+
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) {
+    return;
+  }
+
+  try {
+    await navigator.serviceWorker.register("./sw.js");
+  } catch (error) {
+    console.error("Service Worker 注册失败", error);
+  }
 }
 
 async function initializeApp() {
@@ -1496,8 +1700,11 @@ async function initializeApp() {
   renderApiForm();
   renderMessages();
   setupEvents();
+  await registerServiceWorker();
   resetMemoryForm();
+  resetWorldbookForm();
   await renderMemoryList();
+  renderWorldbookList();
   autoGrowTextarea();
 }
 

@@ -481,6 +481,15 @@ button {
   overflow: auto;
 }
 
+.worldbook-panel {
+  background: rgba(255, 255, 255, 0.94);
+  color: #141413;
+  border-radius: 30px;
+  padding: 22px 18px 18px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.24);
+  overflow: auto;
+}
+
 .memory-title {
   margin: 0;
   font-size: 24px;
@@ -550,12 +559,119 @@ button {
   gap: 10px;
 }
 
+.worldbook-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .memory-item-card {
   border-radius: 18px;
   border: 1px solid rgba(20, 20, 19, 0.08);
   background: #fff;
   padding: 14px;
   box-shadow: 0 8px 18px rgba(20, 20, 19, 0.04);
+}
+
+.worldbook-item-card {
+  border-radius: 18px;
+  border: 1px solid rgba(20, 20, 19, 0.08);
+  background: #fff;
+  padding: 14px;
+  box-shadow: 0 8px 18px rgba(20, 20, 19, 0.04);
+}
+
+.worldbook-item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.worldbook-item-title-wrap {
+  min-width: 0;
+}
+
+.worldbook-item-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.45;
+  color: #141413;
+}
+
+.worldbook-item-time {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: rgba(20, 20, 19, 0.56);
+}
+
+.worldbook-item-content {
+  line-height: 1.7;
+  color: #1e1e1d;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.inline-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 14px;
+  color: #141413;
+}
+
+.inline-check input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.worldbook-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 52px;
+  height: 32px;
+  flex: 0 0 auto;
+}
+
+.worldbook-switch input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.worldbook-switch-slider {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: rgba(20, 20, 19, 0.16);
+  transition: background 180ms ease;
+}
+
+.worldbook-switch-slider::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 4px 10px rgba(20, 20, 19, 0.12);
+  transition: transform 180ms ease;
+}
+
+.worldbook-switch input:checked + .worldbook-switch-slider {
+  background: #141413;
+}
+
+.worldbook-switch input:checked + .worldbook-switch-slider::after {
+  transform: translateX(20px);
 }
 
 .memory-item-meta {
@@ -785,3 +901,4 @@ button {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
+
