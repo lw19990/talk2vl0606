@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <title>AI 聊天器</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <canvas id="shader-canvas" aria-hidden="true"></canvas>
+
+      <div class="panel-track" id="panel-track" data-view="chat">
+        <section class="panel toolbox-panel" id="toolbox-panel" aria-label="工具箱">
+          <div class="toolbox-header">
+            <p class="toolbox-kicker">Toolbox</p>
+            <h1>工具箱</h1>
+            <p class="toolbox-hint">右滑返回聊天，点击“设置”可配置 API。</p>
+          </div>
+
+          <div class="tool-grid" id="tool-grid"></div>
+        </section>
+
+        <section class="panel chat-panel" id="chat-panel" aria-label="聊天界面">
+          <header class="top-bar">
+            <div class="chat-title-wrap">
+              <p class="chat-kicker">AI Chat</p>
+              <h2 id="chat-role-name">与你对话的人</h2>
+            </div>
+            <button
+              id="chat-settings-trigger"
+              class="circle-action"
+              type="button"
+              aria-label="聊天设定"
+            >
+              ...
+            </button>
+          </header>
+
+          <main class="messages" id="messages" aria-live="polite"></main>
+
+          <form class="composer" id="composer-form">
+            <label class="sr-only" for="message-input">输入消息</label>
+            <textarea
+              id="message-input"
+              rows="1"
+              maxlength="4000"
+              placeholder="Reply To..."
+            ></textarea>
+            <button
+              class="send-button"
+              id="send-button"
+              type="submit"
+              aria-label="发送"
+            >
+              ↑
+            </button>
+          </form>
+        </section>
+      </div>
+    </div>
+
+    <div class="sheet thinking-sheet" id="thinking-sheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-close-thinking></div>
+      <div class="sheet-panel thinking-panel">
+        <button class="sheet-close dark-close" type="button" data-close-thinking>
+          ×
+        </button>
+        <p class="sheet-kicker">Thinking</p>
+        <div class="thinking-content" id="thinking-content"></div>
+      </div>
+    </div>
+
+    <div class="sheet settings-sheet" id="profile-sheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-close-profile></div>
+      <div class="sheet-panel profile-panel">
+        <button class="sheet-close" type="button" data-close-profile>×</button>
+        <div class="tab-switcher">
+          <button
+            type="button"
+            class="tab-btn active"
+            data-profile-tab="partner"
+          >
+            对方设定
+          </button>
+          <button type="button" class="tab-btn" data-profile-tab="self">
+            我的介绍
+          </button>
+        </div>
+
+        <div class="profile-tab active" data-profile-panel="partner">
+          <div class="avatar-upload">
+            <div class="avatar-preview" id="avatar-preview"></div>
+            <label class="upload-btn" for="avatar-input">上传头像</label>
+            <input id="avatar-input" type="file" accept="image/*" hidden />
+          </div>
+
+          <label class="field">
+            <span>角色姓名</span>
+            <input id="partner-name" type="text" maxlength="40" />
+          </label>
+
+          <label class="field">
+            <span>角色设定</span>
+            <textarea id="partner-prompt" rows="7" maxlength="4000"></textarea>
+          </label>
+        </div>
+
+        <div class="profile-tab" data-profile-panel="self">
+          <label class="field">
+            <span>用户名字</span>
+            <input id="self-name" type="text" maxlength="40" />
+          </label>
+
+          <label class="field">
+            <span>用户设定</span>
+            <textarea id="self-prompt" rows="9" maxlength="4000"></textarea>
+          </label>
+        </div>
+
+        <button class="primary-save" id="save-profile-btn" type="button">
+          保存设定
+        </button>
+      </div>
+    </div>
+
+    <div class="sheet settings-sheet" id="api-sheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-close-api></div>
+      <div class="sheet-panel api-panel">
+        <button class="sheet-close" type="button" data-close-api>×</button>
+        <p class="sheet-kicker dark-text">OpenAI 格式 API</p>
+
+        <label class="field dark-field">
+          <span>Base URL</span>
+          <input id="api-base-url" type="text" placeholder="https://api.openai.com/v1" />
+        </label>
+
+        <label class="field dark-field">
+          <span>API Key</span>
+          <input id="api-key" type="password" placeholder="sk-..." />
+        </label>
+
+        <div class="field dark-field">
+          <span>Model Name</span>
+          <div class="model-row">
+            <input id="api-model-name" type="text" placeholder="gpt-4o-mini" />
+            <button id="fetch-models-btn" class="secondary-btn" type="button">
+              拉取模型
+            </button>
+          </div>
+          <select id="model-select">
+            <option value="">可用模型列表</option>
+          </select>
+        </div>
+
+        <div class="field dark-field">
+          <span>温度设置</span>
+          <div class="temperature-row">
+            <input
+              id="temperature-range"
+              type="range"
+              min="0"
+              max="2"
+              step="0.1"
+            />
+            <input
+              id="temperature-input"
+              type="number"
+              min="0"
+              max="2"
+              step="0.1"
+            />
+          </div>
+        </div>
+
+        <button class="primary-save" id="save-api-btn" type="button">保存</button>
+      </div>
+    </div>
+
+    <div class="sheet settings-sheet" id="memory-sheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-close-memory></div>
+      <div class="sheet-panel memory-panel">
+        <button class="sheet-close" type="button" data-close-memory>×</button>
+        <p class="sheet-kicker dark-text">Memory Palace</p>
+        <h3 class="memory-title">记忆</h3>
+        <p class="memory-hint">
+          所有数据仅保存在当前浏览器的 IndexedDB 中，可导入旧项目记忆 JSON。
+        </p>
+
+        <div class="memory-actions">
+          <button class="secondary-btn" id="import-memory-btn" type="button">
+            导入记忆
+          </button>
+          <button class="secondary-btn" id="export-memory-btn" type="button">
+            导出记忆
+          </button>
+          <input id="memory-import-input" type="file" accept=".json,application/json" hidden />
+        </div>
+
+        <div class="memory-tabs">
+          <button type="button" class="tab-btn active" data-memory-room="long_term">
+            长期记忆
+          </button>
+          <button type="button" class="tab-btn" data-memory-room="schedule">
+            日程记忆
+          </button>
+          <button type="button" class="tab-btn" data-memory-room="short_term">
+            短效记忆
+          </button>
+          <button type="button" class="tab-btn" data-memory-room="impression">
+            用户印象
+          </button>
+        </div>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h4>新增 / 编辑记忆</h4>
+            <button class="text-btn" id="memory-form-reset-btn" type="button">
+              清空
+            </button>
+          </div>
+
+          <label class="field">
+            <span>内容</span>
+            <textarea
+              id="memory-content"
+              rows="4"
+              maxlength="4000"
+              placeholder="输入要保存的记忆内容"
+            ></textarea>
+          </label>
+
+          <div class="memory-grid">
+            <label class="field">
+              <span>重要性（1-10）</span>
+              <input id="memory-importance" type="number" min="1" max="10" step="1" value="6" />
+            </label>
+
+            <label class="field" id="memory-schedule-group" hidden>
+              <span>事件时间</span>
+              <input id="memory-schedule-at" type="datetime-local" />
+            </label>
+          </div>
+
+          <div class="memory-grid">
+            <label class="field" id="memory-impression-group" hidden>
+              <span>印象分区</span>
+              <select id="memory-impression-section">
+                <option value="profile">基础认知</option>
+                <option value="relationship">我们的关系</option>
+                <option value="notes">注意事项</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>来源角色名（可选）</span>
+              <input
+                id="memory-source-contact"
+                type="text"
+                maxlength="80"
+                placeholder="旧项目迁移时可用于角色匹配"
+              />
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Embedding（可选 JSON 数组，留空则本地自动生成）</span>
+            <textarea
+              id="memory-embedding"
+              rows="3"
+              placeholder="[0.12, -0.04, 0.56]"
+            ></textarea>
+          </label>
+
+          <button class="primary-save" id="save-memory-btn" type="button">
+            保存记忆
+          </button>
+        </section>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h4>本地检索测试</h4>
+          </div>
+          <label class="field">
+            <span>输入一句话，测试余弦相似度检索</span>
+            <textarea
+              id="memory-search-input"
+              rows="3"
+              maxlength="1000"
+              placeholder="例如：她下周三下午要去复查"
+            ></textarea>
+          </label>
+          <button class="secondary-btn full-width" id="memory-search-btn" type="button">
+            检索记忆
+          </button>
+          <div class="memory-search-results" id="memory-search-results"></div>
+        </section>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h4>当前分区记忆</h4>
+            <span class="memory-count" id="memory-count">0 条</span>
+          </div>
+          <div class="memory-list" id="memory-list"></div>
+        </section>
+      </div>
+    </div>
+
+    <template id="empty-state-template">
+      <div class="empty-state">
+        <p>这里会开始你们的对话。</p>
+        <p>向左滑可以打开工具箱，右上角可以编辑人设。</p>
+      </div>
+    </template>
+
+    <script src="./script.js"></script>
+  </body>
+</html>

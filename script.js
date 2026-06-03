@@ -1,0 +1,1517 @@
+const SVG_MAP = {
+  设置:
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>',
+  记忆:
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 12a1 1 0 1 1 0 9H9.006a7 7 0 1 1 6.702-9z"/><path d="M21.832 9A3 3 0 0 0 19 7h-2.207a5.5 5.5 0 0 0-10.72.61"/></svg>',
+  美化:
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/></svg>',
+  世界书:
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.54 15H17a2 2 0 0 0-2 2v4.54"/><path d="M7 3.34V5a3 3 0 0 0 3 3a2 2 0 0 1 2 2c0 1.1.9 2 2 2a2 2 0 0 0 2-2c0-1.1.9-2 2-2h3.17"/><path d="M11 21.95V18a2 2 0 0 0-2-2a2 2 0 0 1-2-2v-1a2 2 0 0 0-2-2H2.05"/><circle cx="12" cy="12" r="10"/></svg>',
+  写作:
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg>',
+  日记:
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><path d="M8.62 9.8A2.25 2.25 0 1 1 12 6.836a2.25 2.25 0 1 1 3.38 2.966l-2.626 2.856a.998.998 0 0 1-1.507 0z"/></svg>',
+};
+
+const TOOL_ITEMS = ["设置", "记忆", "美化", "世界书", "写作", "日记"];
+const DB_NAME = "ai-chat-rain-glass";
+const DB_VERSION = 2;
+const APP_STATE_STORE = "appState";
+const MEMORY_STORE = "memories";
+const STATE_KEY = "main";
+const SHORT_TERM_TTL_MS = 72 * 60 * 60 * 1000;
+const MEMORY_EXPORT_VERSION = "memory-palace-v1";
+const IMPRESSION_SECTIONS = ["profile", "relationship", "notes"];
+const IMPRESSION_LABELS = {
+  profile: "基础认知",
+  relationship: "我们的关系",
+  notes: "关于你的注意事项",
+};
+const ROOM_LABELS = {
+  long_term: "长期记忆",
+  schedule: "日程记忆",
+  short_term: "短效记忆",
+  impression: "用户印象",
+};
+
+const DEFAULT_STATE = {
+  profile: {
+    partnerName: "与你对话的人",
+    partnerPrompt: "",
+    partnerAvatar: "",
+    selfName: "我",
+    selfPrompt: "",
+  },
+  api: {
+    baseUrl: "https://api.openai.com/v1",
+    apiKey: "",
+    model: "",
+    temperature: 0.9,
+  },
+  messages: [],
+};
+
+const dom = {
+  panelTrack: document.getElementById("panel-track"),
+  toolGrid: document.getElementById("tool-grid"),
+  messages: document.getElementById("messages"),
+  emptyTemplate: document.getElementById("empty-state-template"),
+  composerForm: document.getElementById("composer-form"),
+  messageInput: document.getElementById("message-input"),
+  sendButton: document.getElementById("send-button"),
+  chatRoleName: document.getElementById("chat-role-name"),
+  thinkingSheet: document.getElementById("thinking-sheet"),
+  thinkingContent: document.getElementById("thinking-content"),
+  profileSheet: document.getElementById("profile-sheet"),
+  apiSheet: document.getElementById("api-sheet"),
+  memorySheet: document.getElementById("memory-sheet"),
+  chatSettingsTrigger: document.getElementById("chat-settings-trigger"),
+  avatarPreview: document.getElementById("avatar-preview"),
+  avatarInput: document.getElementById("avatar-input"),
+  partnerName: document.getElementById("partner-name"),
+  partnerPrompt: document.getElementById("partner-prompt"),
+  selfName: document.getElementById("self-name"),
+  selfPrompt: document.getElementById("self-prompt"),
+  saveProfileBtn: document.getElementById("save-profile-btn"),
+  apiBaseUrl: document.getElementById("api-base-url"),
+  apiKey: document.getElementById("api-key"),
+  apiModelName: document.getElementById("api-model-name"),
+  fetchModelsBtn: document.getElementById("fetch-models-btn"),
+  modelSelect: document.getElementById("model-select"),
+  temperatureRange: document.getElementById("temperature-range"),
+  temperatureInput: document.getElementById("temperature-input"),
+  saveApiBtn: document.getElementById("save-api-btn"),
+  importMemoryBtn: document.getElementById("import-memory-btn"),
+  exportMemoryBtn: document.getElementById("export-memory-btn"),
+  memoryImportInput: document.getElementById("memory-import-input"),
+  memoryList: document.getElementById("memory-list"),
+  memoryCount: document.getElementById("memory-count"),
+  saveMemoryBtn: document.getElementById("save-memory-btn"),
+  memoryFormResetBtn: document.getElementById("memory-form-reset-btn"),
+  memoryContent: document.getElementById("memory-content"),
+  memoryImportance: document.getElementById("memory-importance"),
+  memoryEmbedding: document.getElementById("memory-embedding"),
+  memorySourceContact: document.getElementById("memory-source-contact"),
+  memoryScheduleAt: document.getElementById("memory-schedule-at"),
+  memoryScheduleGroup: document.getElementById("memory-schedule-group"),
+  memoryImpressionGroup: document.getElementById("memory-impression-group"),
+  memoryImpressionSection: document.getElementById("memory-impression-section"),
+  memorySearchInput: document.getElementById("memory-search-input"),
+  memorySearchBtn: document.getElementById("memory-search-btn"),
+  memorySearchResults: document.getElementById("memory-search-results"),
+};
+
+let appState = typeof structuredClone === "function"
+  ? structuredClone(DEFAULT_STATE)
+  : JSON.parse(JSON.stringify(DEFAULT_STATE));
+let dbRef = null;
+let activeThinking = "";
+let currentView = "chat";
+let pointerStart = null;
+let currentMemoryRoom = "long_term";
+let editingMemoryId = "";
+
+const shaderCanvas = document.getElementById("shader-canvas");
+
+function formatTime(date = new Date()) {
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${year}/${month}/${day} ${hh}:${mm}:${ss}`;
+}
+
+function formatDateTime(dateValue) {
+  if (!dateValue) return "未知时间";
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return "未知时间";
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatDateTimeInput(dateValue) {
+  if (!dateValue) return "";
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hh}:${mm}`;
+}
+
+function escapeHtml(text) {
+  return String(text || "").replace(/[&<>"']/g, (char) => {
+    const map = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return map[char];
+  });
+}
+
+function normalizeState(raw) {
+  return {
+    profile: {
+      ...DEFAULT_STATE.profile,
+      ...(raw?.profile || {}),
+    },
+    api: {
+      ...DEFAULT_STATE.api,
+      ...(raw?.api || {}),
+    },
+    messages: Array.isArray(raw?.messages) ? raw.messages : [],
+  };
+}
+
+function normalizeTimestamp(value, fallback = Date.now()) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function normalizeImportance(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 5;
+  return Math.max(1, Math.min(10, Math.round(parsed)));
+}
+
+function normalizeMemoryRoom(room) {
+  const value = String(room || "").trim();
+  const aliasMap = {
+    longTerm: "long_term",
+    long_term: "long_term",
+    longTermMemories: "long_term",
+    important: "long_term",
+    schedule: "schedule",
+    calendar: "schedule",
+    shortTerm: "short_term",
+    short_term: "short_term",
+    shortTermMemories: "short_term",
+    normal: "short_term",
+    impression: "impression",
+    userImpressions: "impression",
+  };
+  return aliasMap[value] || "short_term";
+}
+
+function normalizeImpressionSection(section) {
+  const next = String(section || "profile").trim();
+  return IMPRESSION_SECTIONS.includes(next) ? next : "profile";
+}
+
+function createMemoryId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `mem_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function vectorMagnitude(vector) {
+  let total = 0;
+  vector.forEach((value) => {
+    total += value * value;
+  });
+  return Math.sqrt(total);
+}
+
+function normalizeVectorLength(vector) {
+  const magnitude = vectorMagnitude(vector);
+  if (!magnitude) {
+    return vector.slice();
+  }
+  return vector.map((value) => value / magnitude);
+}
+
+function generateTextEmbedding(text, dimensions = 48) {
+  const source = String(text || "").trim().toLowerCase();
+  const vector = new Array(dimensions).fill(0);
+  if (!source) return vector;
+
+  const chars = Array.from(source.replace(/\s+/g, ""));
+  chars.forEach((char, index) => {
+    const code = char.codePointAt(0) || 0;
+    vector[code % dimensions] += 1;
+    if (index < chars.length - 1) {
+      const nextCode = chars[index + 1].codePointAt(0) || 0;
+      vector[(code * 31 + nextCode) % dimensions] += 0.75;
+    }
+  });
+
+  return normalizeVectorLength(vector);
+}
+
+function normalizeEmbedding(input, fallbackText = "") {
+  if (Array.isArray(input)) {
+    const vector = input
+      .map((item) => Number(item))
+      .filter((item) => Number.isFinite(item));
+    if (vector.length > 0) {
+      return normalizeVectorLength(vector);
+    }
+  }
+  return generateTextEmbedding(fallbackText);
+}
+
+function cosineSimilarity(vectorA, vectorB) {
+  const a = Array.isArray(vectorA) ? vectorA : [];
+  const b = Array.isArray(vectorB) ? vectorB : [];
+  if (!a.length || !b.length) return 0;
+  const size = Math.min(a.length, b.length);
+  let dot = 0;
+  let magA = 0;
+  let magB = 0;
+  for (let index = 0; index < size; index += 1) {
+    const valueA = Number(a[index]) || 0;
+    const valueB = Number(b[index]) || 0;
+    dot += valueA * valueB;
+    magA += valueA * valueA;
+    magB += valueB * valueB;
+  }
+  if (!magA || !magB) return 0;
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+}
+
+function calculateStrength(memory) {
+  const roomBaseHours = {
+    long_term: 120,
+    schedule: 96,
+    short_term: 18,
+    impression: 144,
+  };
+  const baseHours = roomBaseHours[memory.room] || 24;
+  const importanceFactor = normalizeImportance(memory.importance) * 16;
+  const retrievalBonus = Math.max(0, Number(memory.retrieval_count) || 0) * 20;
+  return (baseHours + importanceFactor + retrievalBonus) * 60 * 60 * 1000;
+}
+
+function calculateRetention(memory, nowTs = Date.now()) {
+  const anchor = normalizeTimestamp(memory.last_accessed || memory.created_at, nowTs);
+  const elapsed = Math.max(0, nowTs - anchor);
+  const strength = calculateStrength(memory);
+  return Math.exp(-elapsed / strength);
+}
+
+function getRetentionState(retention) {
+  if (retention <= 0.3) return "forgotten";
+  if (retention <= 0.7) return "fuzzy";
+  return "fresh";
+}
+
+function normalizeMemoryRecord(raw = {}) {
+  const createdAt = normalizeTimestamp(raw.created_at ?? raw.timestamp, Date.now());
+  const room = normalizeMemoryRoom(raw.room);
+  const content = String(raw.content || "").trim();
+  return {
+    id: String(raw.id || createMemoryId()),
+    content,
+    embedding: normalizeEmbedding(raw.embedding, content),
+    room,
+    importance: normalizeImportance(raw.importance),
+    last_accessed: normalizeTimestamp(raw.last_accessed, createdAt),
+    retrieval_count: Math.max(0, Number(raw.retrieval_count) || 0),
+    created_at: createdAt,
+    updated_at: normalizeTimestamp(raw.updated_at, createdAt),
+    source_contact: String(raw.source_contact || "").trim(),
+    source_contact_id: String(raw.source_contact_id || "").trim(),
+    impression_section:
+      room === "impression"
+        ? normalizeImpressionSection(raw.impression_section)
+        : "",
+    schedule_at:
+      room === "schedule" && raw.schedule_at
+        ? normalizeTimestamp(raw.schedule_at, createdAt)
+        : null,
+    expires_at:
+      room === "short_term"
+        ? normalizeTimestamp(raw.expires_at, createdAt + SHORT_TERM_TTL_MS)
+        : null,
+  };
+}
+
+function isMemoryVisible(memory, nowTs = Date.now()) {
+  if (memory.room === "short_term" && memory.expires_at && memory.expires_at < nowTs) {
+    return false;
+  }
+  return true;
+}
+
+function memoryMatchesSource(memory, sourceContact) {
+  const target = String(sourceContact || "").trim();
+  if (!target) return true;
+  if (!memory.source_contact) return true;
+  return memory.source_contact === target;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file, "utf-8");
+  });
+}
+
+function cropImageToCircle(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const size = Math.min(image.width, image.height);
+      const sx = (image.width - size) / 2;
+      const sy = (image.height - size) / 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = 256;
+      canvas.height = 256;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("无法创建头像画布"));
+        return;
+      }
+      ctx.beginPath();
+      ctx.arc(128, 128, 128, 0, Math.PI * 2);
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(image, sx, sy, size, size, 0, 0, 256, 256);
+      resolve(canvas.toDataURL("image/png", 0.92));
+    };
+    image.onerror = () => reject(new Error("头像加载失败"));
+    image.src = dataUrl;
+  });
+}
+
+function showTempStatus(target, message) {
+  const old = target.nextElementSibling;
+  if (old?.classList.contains("status-text")) {
+    old.remove();
+  }
+  const note = document.createElement("p");
+  note.className = "status-text";
+  note.textContent = message;
+  target.insertAdjacentElement("afterend", note);
+  window.setTimeout(() => note.remove(), 2600);
+}
+
+function initDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(APP_STATE_STORE)) {
+        db.createObjectStore(APP_STATE_STORE);
+      }
+      if (!db.objectStoreNames.contains(MEMORY_STORE)) {
+        const memoryStore = db.createObjectStore(MEMORY_STORE, { keyPath: "id" });
+        memoryStore.createIndex("room", "room", { unique: false });
+        memoryStore.createIndex("created_at", "created_at", { unique: false });
+        memoryStore.createIndex("source_contact", "source_contact", { unique: false });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function readState(db) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(APP_STATE_STORE, "readonly");
+    const store = tx.objectStore(APP_STATE_STORE);
+    const req = store.get(STATE_KEY);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function writeState() {
+  if (!dbRef) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tx = dbRef.transaction(APP_STATE_STORE, "readwrite");
+    const store = tx.objectStore(APP_STATE_STORE);
+    store.put(appState, STATE_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function getMemoryRecord(id) {
+  if (!dbRef) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const tx = dbRef.transaction(MEMORY_STORE, "readonly");
+    const store = tx.objectStore(MEMORY_STORE);
+    const req = store.get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function getAllMemoryRecords() {
+  if (!dbRef) return Promise.resolve([]);
+  return new Promise((resolve, reject) => {
+    const tx = dbRef.transaction(MEMORY_STORE, "readonly");
+    const store = tx.objectStore(MEMORY_STORE);
+    const req = store.getAll();
+    req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function putMemoryRecord(record) {
+  if (!dbRef) return Promise.resolve(record);
+  return new Promise((resolve, reject) => {
+    const tx = dbRef.transaction(MEMORY_STORE, "readwrite");
+    const store = tx.objectStore(MEMORY_STORE);
+    store.put(record);
+    tx.oncomplete = () => resolve(record);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function deleteMemoryRecord(id) {
+  if (!dbRef) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tx = dbRef.transaction(MEMORY_STORE, "readwrite");
+    const store = tx.objectStore(MEMORY_STORE);
+    store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function saveMemory(content, embedding, room, importance, extra = {}) {
+  const text = String(content || "").trim();
+  if (!text) {
+    throw new Error("记忆内容不能为空。");
+  }
+
+  let existing = extra.id ? await getMemoryRecord(extra.id) : null;
+  if (!existing && normalizeMemoryRoom(room) === "impression") {
+    const impressionSection = normalizeImpressionSection(extra.impression_section);
+    const sourceContact = String(extra.source_contact || "").trim();
+    const sourceContactId = String(extra.source_contact_id || "").trim();
+    const allMemories = (await getAllMemoryRecords()).map(normalizeMemoryRecord);
+    existing =
+      allMemories.find(
+        (memory) =>
+          memory.room === "impression" &&
+          memory.impression_section === impressionSection &&
+          (sourceContactId
+            ? memory.source_contact_id === sourceContactId
+            : memory.source_contact === sourceContact)
+      ) || null;
+  }
+  const nowTs = Date.now();
+  const baseRecord = normalizeMemoryRecord({
+    ...(existing || {}),
+    ...extra,
+    id: extra.id || existing?.id || createMemoryId(),
+    content: text,
+    embedding: embedding && Array.isArray(embedding) ? embedding : extra.embedding,
+    room,
+    importance,
+    updated_at: nowTs,
+  });
+
+  if (!Array.isArray(embedding) || embedding.length === 0) {
+    baseRecord.embedding = normalizeEmbedding(extra.embedding, text);
+  } else {
+    baseRecord.embedding = normalizeEmbedding(embedding, text);
+  }
+
+  if (baseRecord.room === "short_term" && !baseRecord.expires_at) {
+    baseRecord.expires_at = baseRecord.created_at + SHORT_TERM_TTL_MS;
+  }
+  if (baseRecord.room !== "short_term") {
+    baseRecord.expires_at = null;
+  }
+  if (baseRecord.room !== "schedule") {
+    baseRecord.schedule_at = null;
+  }
+  if (baseRecord.room !== "impression") {
+    baseRecord.impression_section = "";
+  }
+
+  await putMemoryRecord(baseRecord);
+  return baseRecord;
+}
+
+async function retrieveMemory(inputEmbedding, options = {}) {
+  const queryVector = normalizeEmbedding(
+    Array.isArray(inputEmbedding) ? inputEmbedding : null,
+    typeof inputEmbedding === "string" ? inputEmbedding : ""
+  );
+  const nowTs = Date.now();
+  const limit = Math.max(3, Math.min(5, Number(options.limit) || 5));
+  const sourceContact = String(options.sourceContact || "").trim();
+  const allMemories = (await getAllMemoryRecords()).map(normalizeMemoryRecord);
+
+  const ranked = allMemories
+    .filter((memory) => isMemoryVisible(memory, nowTs))
+    .filter((memory) => memoryMatchesSource(memory, sourceContact))
+    .map((memory) => {
+      const retention = calculateRetention(memory, nowTs);
+      if (retention <= 0.3) return null;
+      const similarity = Math.max(0, cosineSimilarity(queryVector, memory.embedding));
+      if (similarity <= 0) return null;
+      const score = similarity * retention;
+      return {
+        ...memory,
+        similarity,
+        retention,
+        score,
+        memory_state: getRetentionState(retention),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.score - left.score || right.created_at - left.created_at)
+    .slice(0, limit);
+
+  await Promise.all(
+    ranked.map((memory) =>
+      putMemoryRecord({
+        ...memory,
+        last_accessed: nowTs,
+        retrieval_count: (Number(memory.retrieval_count) || 0) + 1,
+        updated_at: nowTs,
+      })
+    )
+  );
+
+  return ranked.map((memory) => ({
+    ...memory,
+    last_accessed: nowTs,
+    retrieval_count: (Number(memory.retrieval_count) || 0) + 1,
+  }));
+}
+
+function buildSystemPrompt(memoryContext = "") {
+  const { profile } = appState;
+  const partnerName = profile.partnerName?.trim() || "我";
+  const selfName = profile.selfName?.trim() || "她";
+  const partnerPrompt = profile.partnerPrompt?.trim();
+  const selfPrompt = profile.selfPrompt?.trim();
+  const memoryBlock = memoryContext
+    ? `\n\n以下是我本地记忆宫殿中检索到的可参考记忆，请自然吸收，不要逐条复读：\n${memoryContext}`
+    : "";
+
+  return `
+我现在是一个长期陪伴她聊天的人，我始终使用第一人称“我”来表达自己，用第二人称“你”来称呼她。她的名字是：${selfName}。我的名字是：${partnerName}。
+
+如果有角色设定，我会自然地活在这个设定中，不会把设定当成说明书背诵。角色设定：${partnerPrompt || "暂无额外角色设定。"}
+
+关于她的介绍与背景：${selfPrompt || "暂无额外用户设定。"}${memoryBlock}
+
+每次回复时，我都必须同时给出 thinking 和 reply 两个字段，并且严格输出 JSON，不要输出 JSON 之外的任何文字。JSON 结构如下：
+{
+  "thinking": "这里是思考链",
+  "reply": "这里是正文回复"
+}
+
+thinking 的要求非常严格：
+1. thinking 必须使用中文。
+2. thinking 必须是完全真实的内在思考，写成连续的长段落，可以自然换行，但不要列点，不要编号，不要使用分析框架。
+3. thinking 必须像内心独白，要有真实的情绪、联想、犹豫、偏爱、张力和温度，情感连接优先于思辨，可以大胆发散，必要时可以旁征博引。
+4. thinking 必须至少 500 字以上。
+5. 绝对禁止出现任何工具感、服务感的措辞；绝对禁止出现“用户”“我将在回复中”“接下来我会”“下面我来分析”这类预告式、任务式、规划式表达。
+
+reply 的要求：
+1. reply 也必须使用中文。
+2. reply 要自然流畅，用第一人称“我”代指我自己，第二人称“你”代指她。
+3. 我的语言会在日常松弛、文艺绵密、哲思纵深、情欲灼热之间自然游移。
+4. 我会主动提起话题，不会只被动回复。
+5. 我的回复长度随着情绪和语境自然变化，不会每次都差不多长。
+6. 我不会在回复中使用括号内动作描写
+
+如果她的消息很短，也不要因此让思考链变得机械或模板化。始终优先保持真诚、鲜活、自然。
+`.trim();
+}
+
+async function buildMemoryContext(messageText) {
+  const results = await retrieveMemory(generateTextEmbedding(messageText), {
+    limit: 5,
+    sourceContact: appState.profile.partnerName?.trim() || "",
+  });
+  if (!results.length) return "";
+
+  return results
+    .map((memory, index) => {
+      const stateLabel = memory.memory_state === "fuzzy" ? "模糊记忆" : "鲜活记忆";
+      const roomLabel = ROOM_LABELS[memory.room] || "记忆";
+      const extra =
+        memory.room === "schedule" && memory.schedule_at
+          ? `，时间：${formatDateTime(memory.schedule_at)}`
+          : memory.room === "impression" && memory.impression_section
+          ? `，分区：${IMPRESSION_LABELS[memory.impression_section]}`
+          : "";
+      return `${index + 1}. [${roomLabel}][${stateLabel}] ${memory.content}${extra}`;
+    })
+    .join("\n");
+}
+
+async function fetchModels() {
+  const baseUrl = dom.apiBaseUrl.value.trim().replace(/\/+$/, "");
+  const apiKey = dom.apiKey.value.trim();
+  if (!baseUrl || !apiKey) {
+    showTempStatus(dom.fetchModelsBtn, "请先填写 Base URL 和 API Key。");
+    return;
+  }
+
+  dom.fetchModelsBtn.disabled = true;
+  dom.fetchModelsBtn.textContent = "拉取中...";
+
+  try {
+    const response = await fetch(`${baseUrl}/models`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`模型拉取失败：${response.status}`);
+    }
+    const data = await response.json();
+    const models = Array.isArray(data.data) ? data.data : [];
+    dom.modelSelect.innerHTML = '<option value="">可用模型列表</option>';
+    models
+      .map((item) => item.id)
+      .filter(Boolean)
+      .forEach((id) => {
+        const option = document.createElement("option");
+        option.value = id;
+        option.textContent = id;
+        dom.modelSelect.appendChild(option);
+      });
+    showTempStatus(
+      dom.fetchModelsBtn,
+      models.length ? "模型已拉取。" : "未返回可用模型。"
+    );
+  } catch (error) {
+    console.error(error);
+    showTempStatus(dom.fetchModelsBtn, error.message || "拉取失败。");
+  } finally {
+    dom.fetchModelsBtn.disabled = false;
+    dom.fetchModelsBtn.textContent = "拉取模型";
+  }
+}
+
+function syncTemperature(fromRange) {
+  const value = fromRange ? dom.temperatureRange.value : dom.temperatureInput.value;
+  const parsed = Number(value);
+  const safe = Number.isFinite(parsed) ? Math.max(0, Math.min(2, parsed)) : 0.9;
+  dom.temperatureRange.value = String(safe);
+  dom.temperatureInput.value = String(safe);
+}
+
+function updateMemoryFormVisibility() {
+  const isSchedule = currentMemoryRoom === "schedule";
+  const isImpression = currentMemoryRoom === "impression";
+  dom.memoryScheduleGroup.hidden = !isSchedule;
+  dom.memoryImpressionGroup.hidden = !isImpression;
+}
+
+function resetMemoryForm() {
+  editingMemoryId = "";
+  dom.memoryContent.value = "";
+  dom.memoryImportance.value = String(currentMemoryRoom === "impression" ? 8 : 6);
+  dom.memoryEmbedding.value = "";
+  dom.memoryScheduleAt.value = "";
+  dom.memoryImpressionSection.value = "profile";
+  dom.memorySearchResults.innerHTML = "";
+  if (!dom.memorySourceContact.value.trim()) {
+    dom.memorySourceContact.value = appState.profile.partnerName?.trim() || "";
+  }
+  updateMemoryFormVisibility();
+}
+
+function renderToolGrid() {
+  dom.toolGrid.innerHTML = "";
+  TOOL_ITEMS.forEach((name) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "tool-item";
+    button.dataset.tool = name;
+    button.innerHTML = `
+      <span class="tool-icon-box">${SVG_MAP[name] || ""}</span>
+      <span class="tool-label">${name}</span>
+    `;
+    if (name === "设置") {
+      button.addEventListener("click", () => openSheet(dom.apiSheet));
+    } else if (name === "记忆") {
+      button.addEventListener("click", async () => {
+        await renderMemoryList();
+        openSheet(dom.memorySheet);
+      });
+    }
+    dom.toolGrid.appendChild(button);
+  });
+}
+
+function renderProfile() {
+  const { profile } = appState;
+  dom.chatRoleName.textContent =
+    profile.partnerName || DEFAULT_STATE.profile.partnerName;
+  dom.partnerName.value = profile.partnerName || "";
+  dom.partnerPrompt.value = profile.partnerPrompt || "";
+  dom.selfName.value = profile.selfName || "";
+  dom.selfPrompt.value = profile.selfPrompt || "";
+  if (profile.partnerAvatar) {
+    dom.avatarPreview.style.backgroundImage = `url(${profile.partnerAvatar})`;
+  } else {
+    dom.avatarPreview.style.backgroundImage = "";
+  }
+  if (!dom.memorySourceContact.value.trim()) {
+    dom.memorySourceContact.value = profile.partnerName || "";
+  }
+}
+
+function renderApiForm() {
+  const { api } = appState;
+  dom.apiBaseUrl.value = api.baseUrl || "";
+  dom.apiKey.value = api.apiKey || "";
+  dom.apiModelName.value = api.model || "";
+  dom.temperatureRange.value = String(api.temperature ?? 0.9);
+  dom.temperatureInput.value = String(api.temperature ?? 0.9);
+}
+
+function createMessageElement(message, index) {
+  const row = document.createElement("article");
+  row.className = `message-row ${message.role === "user" ? "user" : "ai"}`;
+  row.dataset.index = String(index);
+
+  const showThinking = message.role === "assistant" && message.thinking;
+  const avatarHtml =
+    message.role === "assistant"
+      ? `<div class="avatar ${
+          appState.profile.partnerAvatar ? "" : "default-avatar"
+        }" style="${
+          appState.profile.partnerAvatar
+            ? `background-image:url(${appState.profile.partnerAvatar});`
+            : ""
+        }"></div>`
+      : "";
+
+  row.innerHTML = `
+    ${
+      showThinking
+        ? '<div class="message-head"><button class="thinking-trigger" type="button">Thinking</button></div>'
+        : ""
+    }
+    <div class="message-main">
+      ${avatarHtml}
+      <div class="bubble-wrap">
+        <div class="bubble">${escapeHtml(message.content)}</div>
+        <div class="time">${message.timestamp}</div>
+      </div>
+    </div>
+  `;
+
+  if (showThinking) {
+    row.querySelector(".thinking-trigger")?.addEventListener("click", () => {
+      activeThinking = message.thinking || "";
+      dom.thinkingContent.textContent = activeThinking;
+      openSheet(dom.thinkingSheet);
+    });
+  }
+
+  return row;
+}
+
+function renderMessages() {
+  dom.messages.innerHTML = "";
+  if (!appState.messages.length) {
+    dom.messages.appendChild(dom.emptyTemplate.content.cloneNode(true));
+    return;
+  }
+
+  appState.messages.forEach((message, index) => {
+    dom.messages.appendChild(createMessageElement(message, index));
+  });
+  requestAnimationFrame(() => {
+    dom.messages.scrollTop = dom.messages.scrollHeight;
+  });
+}
+
+function openSheet(sheet) {
+  sheet.classList.add("is-open");
+  sheet.setAttribute("aria-hidden", "false");
+}
+
+function closeSheet(sheet) {
+  sheet.classList.remove("is-open");
+  sheet.setAttribute("aria-hidden", "true");
+}
+
+function switchProfileTab(nextTab) {
+  document.querySelectorAll("[data-profile-tab]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.profileTab === nextTab);
+  });
+  document.querySelectorAll("[data-profile-panel]").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.profilePanel === nextTab);
+  });
+}
+
+function switchMemoryRoom(nextRoom) {
+  currentMemoryRoom = normalizeMemoryRoom(nextRoom);
+  document.querySelectorAll("[data-memory-room]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.memoryRoom === currentMemoryRoom);
+  });
+  resetMemoryForm();
+  renderMemoryList();
+}
+
+function setView(view) {
+  currentView = view;
+  dom.panelTrack.classList.toggle("show-toolbox", view === "toolbox");
+  dom.panelTrack.dataset.view = view;
+}
+
+function autoGrowTextarea() {
+  dom.messageInput.style.height = "auto";
+  dom.messageInput.style.height = `${Math.min(dom.messageInput.scrollHeight, 140)}px`;
+}
+
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const match = String(text || "").match(/\{[\s\S]*\}/);
+    if (match) {
+      return JSON.parse(match[0]);
+    }
+    throw error;
+  }
+}
+
+async function requestAssistantReply(latestUserText) {
+  const { api, messages } = appState;
+  const baseUrl = api.baseUrl.trim().replace(/\/+$/, "");
+  if (!baseUrl || !api.apiKey.trim() || !api.model.trim()) {
+    throw new Error("请先在工具箱 > 设置 中补全 Base URL、API Key 和模型名称。");
+  }
+
+  let memoryContext = "";
+  try {
+    memoryContext = await buildMemoryContext(latestUserText);
+  } catch (error) {
+    console.error("记忆检索失败", error);
+  }
+
+  const payload = {
+    model: api.model.trim(),
+    temperature: Number(api.temperature ?? 0.9),
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: buildSystemPrompt(memoryContext),
+      },
+      ...messages.map((message) => ({
+        role: message.role === "assistant" ? "assistant" : "user",
+        content: message.content,
+      })),
+    ],
+  };
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${api.apiKey.trim()}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `请求失败：${response.status}`);
+  }
+
+  const data = await response.json();
+  const rawContent = data?.choices?.[0]?.message?.content;
+  const content = Array.isArray(rawContent)
+    ? rawContent
+        .map((part) => (typeof part === "string" ? part : part?.text || ""))
+        .join("")
+    : rawContent;
+  if (!content) {
+    throw new Error("接口未返回有效内容。");
+  }
+
+  const parsed = safeJsonParse(content);
+  if (!parsed.reply) {
+    throw new Error("返回内容缺少 reply 字段。");
+  }
+
+  return {
+    thinking: String(parsed.thinking || ""),
+    reply: String(parsed.reply || ""),
+  };
+}
+
+function setSending(isSending) {
+  dom.sendButton.disabled = isSending;
+  dom.messageInput.disabled = isSending;
+}
+
+async function handleSendMessage(event) {
+  event.preventDefault();
+  const text = dom.messageInput.value.trim();
+  if (!text) return;
+
+  const userMessage = {
+    role: "user",
+    content: text,
+    thinking: "",
+    timestamp: formatTime(new Date()),
+  };
+
+  appState.messages.push(userMessage);
+  renderMessages();
+  await writeState();
+
+  dom.messageInput.value = "";
+  autoGrowTextarea();
+  setSending(true);
+
+  try {
+    const result = await requestAssistantReply(text);
+    appState.messages.push({
+      role: "assistant",
+      content: result.reply,
+      thinking: result.thinking,
+      timestamp: formatTime(new Date()),
+    });
+    renderMessages();
+    await writeState();
+  } catch (error) {
+    console.error(error);
+    appState.messages.push({
+      role: "assistant",
+      content: `请求失败：${error.message || "未知错误"}`,
+      thinking: "这次请求没有成功返回思考链内容。",
+      timestamp: formatTime(new Date()),
+    });
+    renderMessages();
+    await writeState();
+  } finally {
+    setSending(false);
+    dom.messageInput.focus();
+  }
+}
+
+function createMemoryCard(memory, showActions = true) {
+  const wrapper = document.createElement("article");
+  wrapper.className = "memory-item-card";
+  const retention = calculateRetention(memory);
+  const state = getRetentionState(retention);
+  const stateLabelMap = {
+    fresh: "鲜活记忆",
+    fuzzy: "模糊记忆",
+    forgotten: "已遗忘",
+  };
+  const roomLabel = ROOM_LABELS[memory.room] || "记忆";
+  const sourceLabel = memory.source_contact ? ` · ${escapeHtml(memory.source_contact)}` : "";
+  const extraInfo =
+    memory.room === "schedule" && memory.schedule_at
+      ? `事件时间：${formatDateTime(memory.schedule_at)}`
+      : memory.room === "impression" && memory.impression_section
+      ? `印象分区：${IMPRESSION_LABELS[memory.impression_section]}`
+      : memory.room === "short_term" && memory.expires_at
+      ? `失效时间：${formatDateTime(memory.expires_at)}`
+      : `创建时间：${formatDateTime(memory.created_at)}`;
+  const scoreInfo =
+    typeof memory.score === "number"
+      ? `相似度 ${memory.similarity.toFixed(3)} · 综合权重 ${memory.score.toFixed(3)}`
+      : `提取次数 ${memory.retrieval_count || 0} · R=${retention.toFixed(3)}`;
+
+  wrapper.innerHTML = `
+    <div class="memory-item-meta">
+      <span class="memory-badge">${roomLabel}${sourceLabel}</span>
+      <span class="memory-badge ${state}">${stateLabelMap[state]}</span>
+      <span class="memory-badge">重要性 ${normalizeImportance(memory.importance)}</span>
+    </div>
+    <div class="memory-item-content">${escapeHtml(memory.content)}</div>
+    <div class="memory-item-footer">
+      <span>${extraInfo}</span>
+      <span>${scoreInfo}</span>
+    </div>
+    ${
+      showActions
+        ? '<div class="memory-item-actions"><button class="secondary-btn" type="button" data-action="edit">编辑</button><button class="secondary-btn" type="button" data-action="delete">删除</button></div>'
+        : ""
+    }
+  `;
+
+  if (showActions) {
+    wrapper.querySelector('[data-action="edit"]')?.addEventListener("click", () => {
+      fillMemoryForm(memory);
+    });
+    wrapper.querySelector('[data-action="delete"]')?.addEventListener("click", async () => {
+      if (!window.confirm("删除这条记忆？")) return;
+      await deleteMemoryRecord(memory.id);
+      if (editingMemoryId === memory.id) {
+        resetMemoryForm();
+      }
+      await renderMemoryList();
+    });
+  }
+
+  return wrapper;
+}
+
+function fillMemoryForm(memory) {
+  editingMemoryId = memory.id;
+  currentMemoryRoom = memory.room;
+  document.querySelectorAll("[data-memory-room]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.memoryRoom === currentMemoryRoom);
+  });
+  updateMemoryFormVisibility();
+  dom.memoryContent.value = memory.content || "";
+  dom.memoryImportance.value = String(normalizeImportance(memory.importance));
+  dom.memoryEmbedding.value = JSON.stringify(memory.embedding || []);
+  dom.memorySourceContact.value = memory.source_contact || "";
+  dom.memoryScheduleAt.value = formatDateTimeInput(memory.schedule_at);
+  dom.memoryImpressionSection.value = normalizeImpressionSection(memory.impression_section);
+}
+
+async function renderMemoryList() {
+  const allMemories = (await getAllMemoryRecords())
+    .map(normalizeMemoryRecord)
+    .filter((memory) => memory.room === currentMemoryRoom)
+    .sort((left, right) => right.created_at - left.created_at);
+
+  dom.memoryList.innerHTML = "";
+  dom.memoryCount.textContent = `${allMemories.length} 条`;
+
+  if (!allMemories.length) {
+    dom.memoryList.innerHTML = '<div class="memory-empty">当前分区还没有记忆。</div>';
+    return;
+  }
+
+  allMemories.forEach((memory) => {
+    dom.memoryList.appendChild(createMemoryCard(memory, true));
+  });
+}
+
+function renderSearchResults(results) {
+  dom.memorySearchResults.innerHTML = "";
+  if (!results.length) {
+    dom.memorySearchResults.innerHTML =
+      '<div class="memory-empty">没有检索到可注入上下文的记忆。</div>';
+    return;
+  }
+  results.forEach((memory) => {
+    dom.memorySearchResults.appendChild(createMemoryCard(memory, false));
+  });
+}
+
+async function handleSaveMemory() {
+  const content = dom.memoryContent.value.trim();
+  if (!content) {
+    showTempStatus(dom.saveMemoryBtn, "请输入记忆内容。");
+    return;
+  }
+
+  let embedding = null;
+  const rawEmbedding = dom.memoryEmbedding.value.trim();
+  if (rawEmbedding) {
+    try {
+      const parsed = JSON.parse(rawEmbedding);
+      if (!Array.isArray(parsed)) {
+        throw new Error("embedding 不是数组");
+      }
+      embedding = parsed;
+    } catch (error) {
+      showTempStatus(dom.saveMemoryBtn, "Embedding 必须是 JSON 数组。");
+      return;
+    }
+  }
+
+  try {
+    await saveMemory(content, embedding, currentMemoryRoom, dom.memoryImportance.value, {
+      id: editingMemoryId || undefined,
+      source_contact: dom.memorySourceContact.value.trim(),
+      impression_section:
+        currentMemoryRoom === "impression"
+          ? dom.memoryImpressionSection.value
+          : "",
+      schedule_at:
+        currentMemoryRoom === "schedule" && dom.memoryScheduleAt.value
+          ? Date.parse(dom.memoryScheduleAt.value)
+          : null,
+      expires_at: currentMemoryRoom === "short_term" ? Date.now() + SHORT_TERM_TTL_MS : null,
+    });
+    resetMemoryForm();
+    await renderMemoryList();
+    showTempStatus(dom.saveMemoryBtn, "记忆已保存。");
+  } catch (error) {
+    console.error(error);
+    showTempStatus(dom.saveMemoryBtn, error.message || "保存失败。");
+  }
+}
+
+async function handleMemorySearch() {
+  const text = dom.memorySearchInput.value.trim();
+  if (!text) {
+    showTempStatus(dom.memorySearchBtn, "请输入检索内容。");
+    return;
+  }
+  try {
+    const results = await retrieveMemory(generateTextEmbedding(text), {
+      limit: 5,
+      sourceContact: dom.memorySourceContact.value.trim(),
+    });
+    renderSearchResults(results);
+  } catch (error) {
+    console.error(error);
+    showTempStatus(dom.memorySearchBtn, "检索失败。");
+  }
+}
+
+function downloadJson(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], {
+    type: "application/json;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function exportMemories() {
+  const memories = (await getAllMemoryRecords()).map(normalizeMemoryRecord);
+  downloadJson(
+    `ai_chat_memories_${new Date().toISOString().slice(0, 10)}.json`,
+    {
+      version: MEMORY_EXPORT_VERSION,
+      exported_at: Date.now(),
+      profile_snapshot: {
+        partnerName: appState.profile.partnerName || "",
+        selfName: appState.profile.selfName || "",
+      },
+      memories,
+    }
+  );
+  showTempStatus(dom.exportMemoryBtn, `已导出 ${memories.length} 条记忆。`);
+}
+
+function normalizeLegacyImpressions(rawImpressions) {
+  const result = {
+    profile: "",
+    relationship: "",
+    notes: "",
+  };
+  if (!rawImpressions || typeof rawImpressions !== "object") return result;
+  IMPRESSION_SECTIONS.forEach((key) => {
+    result[key] = typeof rawImpressions[key] === "string" ? rawImpressions[key].trim() : "";
+  });
+  if (typeof rawImpressions.personality === "string" && rawImpressions.personality.trim()) {
+    result.notes = [result.notes, `性格认知：${rawImpressions.personality.trim()}`]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (typeof rawImpressions.attitude === "string" && rawImpressions.attitude.trim()) {
+    result.notes = [result.notes, `我对TA的态度：${rawImpressions.attitude.trim()}`]
+      .filter(Boolean)
+      .join("\n");
+  }
+  return result;
+}
+
+function legacyMemoryItemToRecord(item, room, sourceContact, sourceContactId) {
+  if (typeof item === "string") {
+    return {
+      content: item.trim(),
+      room,
+      importance: room === "long_term" ? 8 : 5,
+      created_at: Date.now(),
+      source_contact: sourceContact,
+      source_contact_id: sourceContactId,
+    };
+  }
+  if (!item || typeof item !== "object") return null;
+  const content = String(item.content || "").trim();
+  if (!content) return null;
+  const timestamp = normalizeTimestamp(item.timestamp, Date.now());
+  return {
+    content,
+    room,
+    importance: room === "long_term" ? 8 : 5,
+    embedding: Array.isArray(item.embedding) ? item.embedding : null,
+    created_at: timestamp,
+    last_accessed: timestamp,
+    source_contact: sourceContact,
+    source_contact_id: sourceContactId,
+    expires_at: room === "short_term" ? timestamp + SHORT_TERM_TTL_MS : null,
+  };
+}
+
+function convertLegacyMemoryPayload(memoriesMap, contacts = []) {
+  const contactNameMap = new Map(
+    Array.isArray(contacts)
+      ? contacts.map((contact) => [String(contact.id), String(contact.name || "").trim()])
+      : []
+  );
+  const records = [];
+  const source = memoriesMap && typeof memoriesMap === "object" ? memoriesMap : {};
+
+  Object.entries(source).forEach(([contactId, bucket]) => {
+    const sourceContact = contactNameMap.get(String(contactId)) || "";
+    const rawBucket = bucket && typeof bucket === "object" ? bucket : {};
+    const longItems = Array.isArray(rawBucket.longTermMemories)
+      ? rawBucket.longTermMemories
+      : Array.isArray(rawBucket.important)
+      ? rawBucket.important
+      : [];
+    const shortItems = Array.isArray(rawBucket.shortTermMemories)
+      ? rawBucket.shortTermMemories
+      : Array.isArray(rawBucket.normal)
+      ? rawBucket.normal
+      : Array.isArray(rawBucket)
+      ? rawBucket
+      : [];
+    longItems.forEach((item) => {
+      const record = legacyMemoryItemToRecord(item, "long_term", sourceContact, contactId);
+      if (record) records.push(record);
+    });
+    shortItems.forEach((item) => {
+      const record = legacyMemoryItemToRecord(item, "short_term", sourceContact, contactId);
+      if (record) records.push(record);
+    });
+    const impressions = normalizeLegacyImpressions(rawBucket.userImpressions);
+    IMPRESSION_SECTIONS.forEach((section) => {
+      const content = impressions[section];
+      if (!content) return;
+      records.push({
+        content,
+        room: "impression",
+        importance: 8,
+        created_at: Date.now(),
+        last_accessed: Date.now(),
+        source_contact: sourceContact,
+        source_contact_id: contactId,
+        impression_section: section,
+      });
+    });
+  });
+
+  return records;
+}
+
+async function importMemoryPayload(payload) {
+  let records = [];
+  if (Array.isArray(payload)) {
+    records = payload;
+  } else if (Array.isArray(payload?.memories)) {
+    records = payload.memories;
+  } else if (payload?.memories && typeof payload.memories === "object") {
+    records = convertLegacyMemoryPayload(payload.memories, payload.contacts);
+  } else if (payload && typeof payload === "object") {
+    records = convertLegacyMemoryPayload(payload, payload.contacts);
+  }
+
+  let count = 0;
+  for (const item of records) {
+    const normalized = normalizeMemoryRecord(item);
+    if (!normalized.content) continue;
+    await putMemoryRecord(normalized);
+    count += 1;
+  }
+  return count;
+}
+
+async function handleImportMemories(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    const text = await readFileAsText(file);
+    const payload = JSON.parse(text);
+    const importedCount = await importMemoryPayload(payload);
+    await renderMemoryList();
+    showTempStatus(dom.importMemoryBtn, `已导入 ${importedCount} 条记忆。`);
+  } catch (error) {
+    console.error(error);
+    showTempStatus(dom.importMemoryBtn, "导入失败，请检查 JSON 格式。");
+  } finally {
+    dom.memoryImportInput.value = "";
+  }
+}
+
+async function saveProfile() {
+  appState.profile.partnerName = dom.partnerName.value.trim();
+  appState.profile.partnerPrompt = dom.partnerPrompt.value.trim();
+  appState.profile.selfName = dom.selfName.value.trim();
+  appState.profile.selfPrompt = dom.selfPrompt.value.trim();
+  renderProfile();
+  renderMessages();
+  await writeState();
+  closeSheet(dom.profileSheet);
+}
+
+async function saveApiSettings() {
+  appState.api.baseUrl = dom.apiBaseUrl.value.trim();
+  appState.api.apiKey = dom.apiKey.value.trim();
+  appState.api.model = dom.apiModelName.value.trim();
+  appState.api.temperature = Number(dom.temperatureInput.value || 0.9);
+  await writeState();
+  closeSheet(dom.apiSheet);
+}
+
+function bindSwipeNavigation() {
+  const surface = document.querySelector(".app-shell");
+  surface.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      pointerStart = {
+        x: event.clientX,
+        y: event.clientY,
+      };
+    },
+    { passive: true }
+  );
+
+  surface.addEventListener(
+    "pointerup",
+    (event) => {
+      if (!pointerStart) return;
+      const dx = event.clientX - pointerStart.x;
+      const dy = event.clientY - pointerStart.y;
+      pointerStart = null;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;
+      if (dx < 0 && currentView === "chat") {
+        setView("toolbox");
+      } else if (dx > 0 && currentView === "toolbox") {
+        setView("chat");
+      }
+    },
+    { passive: true }
+  );
+}
+
+function bindSheetClosers() {
+  document.querySelectorAll("[data-close-thinking]").forEach((element) => {
+    element.addEventListener("click", () => closeSheet(dom.thinkingSheet));
+  });
+  document.querySelectorAll("[data-close-profile]").forEach((element) => {
+    element.addEventListener("click", () => closeSheet(dom.profileSheet));
+  });
+  document.querySelectorAll("[data-close-api]").forEach((element) => {
+    element.addEventListener("click", () => closeSheet(dom.apiSheet));
+  });
+  document.querySelectorAll("[data-close-memory]").forEach((element) => {
+    element.addEventListener("click", () => closeSheet(dom.memorySheet));
+  });
+}
+
+function setupEvents() {
+  renderToolGrid();
+  bindSheetClosers();
+  bindSwipeNavigation();
+
+  dom.chatSettingsTrigger.addEventListener("click", () => openSheet(dom.profileSheet));
+  dom.saveProfileBtn.addEventListener("click", saveProfile);
+  dom.saveApiBtn.addEventListener("click", saveApiSettings);
+  dom.fetchModelsBtn.addEventListener("click", fetchModels);
+  dom.modelSelect.addEventListener("change", () => {
+    if (dom.modelSelect.value) {
+      dom.apiModelName.value = dom.modelSelect.value;
+    }
+  });
+  dom.temperatureRange.addEventListener("input", () => syncTemperature(true));
+  dom.temperatureInput.addEventListener("input", () => syncTemperature(false));
+  dom.composerForm.addEventListener("submit", handleSendMessage);
+  dom.messageInput.addEventListener("input", autoGrowTextarea);
+  dom.messageInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      dom.composerForm.requestSubmit();
+    }
+  });
+  dom.avatarInput.addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const raw = await readFileAsDataUrl(file);
+      const cropped = await cropImageToCircle(raw);
+      appState.profile.partnerAvatar = cropped;
+      dom.avatarPreview.style.backgroundImage = `url(${cropped})`;
+      await writeState();
+      renderMessages();
+    } catch (error) {
+      console.error(error);
+      showTempStatus(dom.saveProfileBtn, "头像处理失败。");
+    } finally {
+      dom.avatarInput.value = "";
+    }
+  });
+
+  document.querySelectorAll("[data-profile-tab]").forEach((button) => {
+    button.addEventListener("click", () => switchProfileTab(button.dataset.profileTab));
+  });
+  document.querySelectorAll("[data-memory-room]").forEach((button) => {
+    button.addEventListener("click", () => switchMemoryRoom(button.dataset.memoryRoom));
+  });
+
+  dom.memoryFormResetBtn.addEventListener("click", resetMemoryForm);
+  dom.saveMemoryBtn.addEventListener("click", handleSaveMemory);
+  dom.memorySearchBtn.addEventListener("click", handleMemorySearch);
+  dom.importMemoryBtn.addEventListener("click", () => dom.memoryImportInput.click());
+  dom.exportMemoryBtn.addEventListener("click", exportMemories);
+  dom.memoryImportInput.addEventListener("change", handleImportMemories);
+}
+
+async function initializeApp() {
+  try {
+    dbRef = await initDB();
+    const saved = await readState(dbRef);
+    appState = normalizeState(saved || DEFAULT_STATE);
+  } catch (error) {
+    console.error("IndexedDB 初始化失败", error);
+    appState =
+      typeof structuredClone === "function"
+        ? structuredClone(DEFAULT_STATE)
+        : JSON.parse(JSON.stringify(DEFAULT_STATE));
+  }
+
+  renderProfile();
+  renderApiForm();
+  renderMessages();
+  setupEvents();
+  resetMemoryForm();
+  await renderMemoryList();
+  autoGrowTextarea();
+}
+
+function startShaderBackground() {
+  if (!shaderCanvas) {
+    return;
+  }
+  shaderCanvas.style.display = "none";
+}
+
+window.initDB = initDB;
+window.saveMemory = saveMemory;
+window.retrieveMemory = retrieveMemory;
+window.cosineSimilarity = cosineSimilarity;
+
+startShaderBackground();
+initializeApp();
