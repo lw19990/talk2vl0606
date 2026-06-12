@@ -145,6 +145,7 @@ let bulkSelectedMessageIds = new Set();
 let editingMessageId = "";
 let longPressState = null;
 let suppressNextMessageScrollClose = false;
+let messageMenuOpenedAt = 0;
 
 const shaderCanvas = document.getElementById("shader-canvas");
 
@@ -1215,9 +1216,14 @@ function updateBulkSelectBar() {
   dom.bulkDeleteBtn.disabled = bulkSelectedMessageIds.size === 0;
 }
 
+function isMessageMenuCloseProtected() {
+  return activeMessageMenuId && Date.now() - messageMenuOpenedAt < 500;
+}
+
 function closeMessageMenu(options = {}) {
   if (!activeMessageMenuId) return;
   activeMessageMenuId = "";
+  messageMenuOpenedAt = 0;
   renderMessages({ preserveScroll: options.preserveScroll !== false });
 }
 
@@ -1238,6 +1244,7 @@ function startLongPress(messageId, pointerId, x, y) {
     fired: false,
     timer: window.setTimeout(() => {
       activeMessageMenuId = messageId;
+      messageMenuOpenedAt = Date.now();
       if (longPressState) {
         longPressState.fired = true;
       }
@@ -1250,6 +1257,7 @@ function startLongPress(messageId, pointerId, x, y) {
 function enterBulkDeleteMode(initialMessageId = "") {
   bulkDeleteMode = true;
   activeMessageMenuId = "";
+  messageMenuOpenedAt = 0;
   bulkSelectedMessageIds = new Set(initialMessageId ? [initialMessageId] : []);
   updateBulkSelectBar();
   renderMessages({ preserveScroll: true });
@@ -1286,6 +1294,7 @@ function openMessageEditModal(messageId) {
   if (!message) return;
   editingMessageId = messageId;
   activeMessageMenuId = "";
+  messageMenuOpenedAt = 0;
   dom.messageEditTitle.textContent = message.role === "assistant" ? "编辑 AI 消息" : "编辑用户消息";
   dom.messageEditInput.value = message.content || "";
   openSheet(dom.messageEditSheet);
@@ -1349,6 +1358,7 @@ async function retryAssistantMessage(messageId) {
   }
 
   activeMessageMenuId = "";
+  messageMenuOpenedAt = 0;
   appState.messages.splice(messageIndex, 1);
   renderMessages({ preserveScroll: true });
   await writeState();
@@ -2407,20 +2417,26 @@ function setupEvents() {
   });
   dom.messages.addEventListener("scroll", () => {
     if (activeMessageMenuId) {
+      if (isMessageMenuCloseProtected()) {
+        return;
+      }
       if (suppressNextMessageScrollClose) {
         suppressNextMessageScrollClose = false;
         return;
       }
       activeMessageMenuId = "";
+      messageMenuOpenedAt = 0;
       renderMessages({ preserveScroll: true });
     }
   });
   document.addEventListener("pointerdown", (event) => {
     if (!activeMessageMenuId) return;
+    if (isMessageMenuCloseProtected()) return;
     if (event.target.closest(".message-action-menu")) return;
     if (event.target.closest(".bubble-wrap")) return;
     activeMessageMenuId = "";
-    renderMessages();
+    messageMenuOpenedAt = 0;
+    renderMessages({ preserveScroll: true });
   });
 
   document.querySelectorAll("[data-profile-tab]").forEach((button) => {
