@@ -133,6 +133,7 @@ let appState = typeof structuredClone === "function"
   : JSON.parse(JSON.stringify(DEFAULT_STATE));
 let dbRef = null;
 let activeThinking = "";
+let activeThinkingMessageId = "";
 let currentView = "chat";
 let pointerStart = null;
 let currentMemoryRoom = "long_term";
@@ -1295,7 +1296,7 @@ function openMessageEditModal(messageId) {
   editingMessageId = messageId;
   activeMessageMenuId = "";
   messageMenuOpenedAt = 0;
-  dom.messageEditTitle.textContent = message.role === "assistant" ? "编辑 AI 消息" : "编辑用户消息";
+  dom.messageEditTitle.textContent = message.role === "assistant" ? "编辑消息" : "编辑我的消息";
   dom.messageEditInput.value = message.content || "";
   openSheet(dom.messageEditSheet);
   renderMessages({ preserveScroll: true });
@@ -1353,7 +1354,7 @@ async function retryAssistantMessage(messageId) {
   const historyBefore = appState.messages.slice(0, messageIndex);
   const latestUserMessage = findPreviousUserMessage(historyBefore);
   if (!latestUserMessage) {
-    showChatStatus("这条 AI 消息前没有可重试的用户消息。", 3200);
+    showChatStatus("这条消息前没有可重试的用户消息。", 3200);
     return;
   }
 
@@ -1363,24 +1364,29 @@ async function retryAssistantMessage(messageId) {
   renderMessages({ preserveScroll: true });
   await writeState();
   setSending(true);
+  const placeholderMessage = createMessage("assistant", "", "");
+  appState.messages.splice(messageIndex, 0, placeholderMessage);
+  renderMessages();
 
   try {
-    const result = await requestAssistantReply(latestUserMessage.content, historyBefore);
-    appState.messages.splice(
-      messageIndex,
-      0,
-      createMessage("assistant", result.reply, result.thinking)
-    );
+    const result = await requestAssistantReply(latestUserMessage.content, historyBefore, {
+      onProgress: (partial) => {
+        updateStreamingAssistantMessage(
+          placeholderMessage,
+          partial.thinking,
+          partial.reply
+        );
+      },
+    });
+    placeholderMessage.content = result.reply;
+    placeholderMessage.thinking = result.thinking;
     renderMessages();
     await writeState();
     showChatStatus("已重新生成这条 AI 消息。");
   } catch (error) {
     console.error(error);
-    appState.messages.splice(
-      messageIndex,
-      0,
-      createMessage("assistant", `请求失败：${error.message || "未知错误"}`, "这次重试没有成功返回思考链内容。")
-    );
+    placeholderMessage.content = `请求失败：${error.message || "未知错误"}`;
+    placeholderMessage.thinking = "这次重试没有成功返回思考链内容。";
     renderMessages();
     await writeState();
     showChatStatus("重试失败。", 3200);
@@ -1469,6 +1475,7 @@ function createMessageElement(message, index) {
     row.querySelector(".thinking-trigger")?.addEventListener("click", () => {
       if (bulkDeleteMode) return;
       activeThinking = message.thinking || "";
+      activeThinkingMessageId = message.id || "";
       dom.thinkingContent.textContent = activeThinking;
       openSheet(dom.thinkingSheet);
     });
@@ -1567,6 +1574,11 @@ function openSheet(sheet) {
 function closeSheet(sheet) {
   sheet.classList.remove("is-open");
   sheet.setAttribute("aria-hidden", "true");
+  if (sheet === dom.thinkingSheet) {
+    activeThinking = "";
+    activeThinkingMessageId = "";
+    dom.thinkingContent.textContent = "";
+  }
 }
 
 function resetWorldbookForm() {
@@ -1786,7 +1798,219 @@ function safeJsonParse(text) {
   }
 }
 
-async function requestAssistantReply(latestUserText, historyMessages = appState.messages) {
+function extractTextContent(rawContent) {
+  return Array.isArray(rawContent)
+    ? rawContent
+        .map((part) => {
+          if (typeof part === "string") return part;
+          if (typeof part?.text === "string") return part.text;
+          if (typeof part?.content === "string") return part.content;
+          return "";
+        })
+        .join("")
+    : typeof rawContent === "string"
+    ? rawContent
+    : typeof rawContent?.text === "string"
+    ? rawContent.text
+    : "";
+}
+
+function findTopLevelJsonKey(source, key, startIndex = 0) {
+  const text = String(source || "");
+  const target = `"${key}"`;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = Math.max(0, startIndex); index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      if (depth === 1 && text.startsWith(target, index)) {
+        return index;
+      }
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth = Math.max(0, depth - 1);
+    }
+  }
+
+  return -1;
+}
+
+function findJsonStringValueStart(source, keyIndex, key) {
+  if (keyIndex < 0) return -1;
+  const text = String(source || "");
+  const keyEnd = keyIndex + key.length + 2;
+  const colonIndex = text.indexOf(":", keyEnd);
+  if (colonIndex < 0) return -1;
+
+  let valueIndex = colonIndex + 1;
+  while (valueIndex < text.length && /\s/.test(text[valueIndex])) {
+    valueIndex += 1;
+  }
+
+  return text[valueIndex] === '"' ? valueIndex + 1 : -1;
+}
+
+function readPartialJsonStringValue(source, startIndex) {
+  const text = String(source || "");
+  let value = "";
+
+  for (let index = Math.max(0, startIndex); index < text.length; index += 1) {
+    const char = text[index];
+
+    if (char === '"') {
+      return {
+        value,
+        closed: true,
+        nextIndex: index + 1,
+      };
+    }
+
+    if (char !== "\\") {
+      value += char;
+      continue;
+    }
+
+    const nextChar = text[index + 1];
+    if (typeof nextChar !== "string") {
+      return {
+        value,
+        closed: false,
+        nextIndex: index,
+      };
+    }
+
+    if (nextChar === "u") {
+      const unicodeHex = text.slice(index + 2, index + 6);
+      if (/^[0-9a-fA-F]{4}$/.test(unicodeHex)) {
+        value += String.fromCharCode(parseInt(unicodeHex, 16));
+        index += 5;
+        continue;
+      }
+      return {
+        value,
+        closed: false,
+        nextIndex: index,
+      };
+    }
+
+    const escapeMap = {
+      '"': '"',
+      "\\": "\\",
+      "/": "/",
+      b: "\b",
+      f: "\f",
+      n: "\n",
+      r: "\r",
+      t: "\t",
+    };
+
+    value += Object.prototype.hasOwnProperty.call(escapeMap, nextChar)
+      ? escapeMap[nextChar]
+      : nextChar;
+    index += 1;
+  }
+
+  return {
+    value,
+    closed: false,
+    nextIndex: text.length,
+  };
+}
+
+function extractPartialAssistantPayload(source) {
+  const text = String(source || "");
+  const result = {
+    thinking: "",
+    reply: "",
+  };
+
+  const thinkingKeyIndex = findTopLevelJsonKey(text, "thinking");
+  const thinkingValueStart = findJsonStringValueStart(text, thinkingKeyIndex, "thinking");
+
+  if (thinkingValueStart >= 0) {
+    const thinkingValue = readPartialJsonStringValue(text, thinkingValueStart);
+    result.thinking = thinkingValue.value;
+
+    const replyKeyIndex = findTopLevelJsonKey(text, "reply", thinkingValue.nextIndex);
+    const replyValueStart = findJsonStringValueStart(text, replyKeyIndex, "reply");
+    if (replyValueStart >= 0) {
+      result.reply = readPartialJsonStringValue(text, replyValueStart).value;
+    }
+    return result;
+  }
+
+  const replyKeyIndex = findTopLevelJsonKey(text, "reply");
+  const replyValueStart = findJsonStringValueStart(text, replyKeyIndex, "reply");
+  if (replyValueStart >= 0) {
+    result.reply = readPartialJsonStringValue(text, replyValueStart).value;
+  }
+
+  return result;
+}
+
+function extractStreamDeltaText(eventData) {
+  const text = String(eventData || "").trim();
+  if (!text || text === "[DONE]") return "";
+
+  try {
+    const payload = JSON.parse(text);
+    const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
+    const deltaContent = choice?.delta?.content;
+    if (deltaContent != null) {
+      return extractTextContent(deltaContent);
+    }
+    const messageContent = choice?.message?.content;
+    if (messageContent != null) {
+      return extractTextContent(messageContent);
+    }
+    if (payload?.content != null) {
+      return extractTextContent(payload.content);
+    }
+    return "";
+  } catch (error) {
+    return text;
+  }
+}
+
+function updateStreamingAssistantMessage(message, thinking, reply) {
+  if (!message) return;
+  message.thinking = String(thinking || "");
+  message.content = String(reply || "");
+  renderMessages();
+
+  if (
+    activeThinkingMessageId === message.id &&
+    dom.thinkingSheet?.classList.contains("is-open")
+  ) {
+    activeThinking = message.thinking;
+    dom.thinkingContent.textContent = message.thinking;
+  }
+}
+
+async function requestAssistantReply(
+  latestUserText,
+  historyMessages = appState.messages,
+  options = {}
+) {
+  const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
   const { api } = appState;
   const baseUrl = api.baseUrl.trim().replace(/\/+$/, "");
   if (!baseUrl || !api.apiKey.trim() || !api.model.trim()) {
@@ -1823,6 +2047,7 @@ async function requestAssistantReply(latestUserText, historyMessages = appState.
   const payload = {
     model: api.model.trim(),
     temperature: Number(api.temperature ?? 0.9),
+    stream: true,
     response_format: { type: "json_object" },
     messages: [
       {
@@ -1847,18 +2072,94 @@ async function requestAssistantReply(latestUserText, historyMessages = appState.
     throw new Error(detail || `请求失败：${response.status}`);
   }
 
-  const data = await response.json();
-  const rawContent = data?.choices?.[0]?.message?.content;
-  const content = Array.isArray(rawContent)
-    ? rawContent
-        .map((part) => (typeof part === "string" ? part : part?.text || ""))
-        .join("")
-    : rawContent;
-  if (!content) {
+  if (!response.body) {
+    const data = await response.json();
+    const content = extractTextContent(data?.choices?.[0]?.message?.content);
+    if (!content) {
+      throw new Error("接口未返回有效内容。");
+    }
+    const parsed = safeJsonParse(content);
+    if (!parsed.reply) {
+      throw new Error("返回内容缺少 reply 字段。");
+    }
+    return {
+      thinking: String(parsed.thinking || ""),
+      reply: String(parsed.reply || ""),
+    };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  const isEventStream = (response.headers.get("content-type") || "")
+    .toLowerCase()
+    .includes("text/event-stream");
+  let rawStructuredText = "";
+  let streamBuffer = "";
+  let lastThinking = "";
+  let lastReply = "";
+
+  const emitProgress = () => {
+    if (!onProgress) return;
+    const partial = extractPartialAssistantPayload(rawStructuredText);
+    if (partial.thinking === lastThinking && partial.reply === lastReply) return;
+    lastThinking = partial.thinking;
+    lastReply = partial.reply;
+    onProgress(partial);
+  };
+
+  const appendStructuredText = (nextChunk) => {
+    if (!nextChunk) return;
+    rawStructuredText += nextChunk;
+    emitProgress();
+  };
+
+  const consumeSseEvent = (eventChunk) => {
+    const dataLines = String(eventChunk || "")
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"));
+    if (!dataLines.length) return;
+
+    const data = dataLines.map((line) => line.slice(5).trimStart()).join("\n");
+    if (!data || data === "[DONE]") return;
+    appendStructuredText(extractStreamDeltaText(data));
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    const decoded = value ? decoder.decode(value, { stream: !done }) : "";
+
+    if (isEventStream) {
+      streamBuffer += decoded;
+      const events = streamBuffer.split(/\r?\n\r?\n/);
+      streamBuffer = events.pop() || "";
+      events.forEach(consumeSseEvent);
+    } else {
+      appendStructuredText(decoded);
+    }
+
+    if (done) {
+      break;
+    }
+  }
+
+  const flushText = decoder.decode();
+  if (flushText) {
+    if (isEventStream) {
+      streamBuffer += flushText;
+    } else {
+      appendStructuredText(flushText);
+    }
+  }
+
+  if (isEventStream && streamBuffer.trim()) {
+    consumeSseEvent(streamBuffer);
+  }
+
+  if (!rawStructuredText) {
     throw new Error("接口未返回有效内容。");
   }
 
-  const parsed = safeJsonParse(content);
+  const parsed = safeJsonParse(rawStructuredText);
   if (!parsed.reply) {
     throw new Error("返回内容缺少 reply 字段。");
   }
@@ -1889,10 +2190,23 @@ async function handleSendMessage(event) {
   dom.messageInput.value = "";
   autoGrowTextarea();
   setSending(true);
+  const historyForRequest = appState.messages.slice();
+  const assistantMessage = createMessage("assistant", "", "");
+  appState.messages.push(assistantMessage);
+  renderMessages();
 
   try {
-    const result = await requestAssistantReply(text, appState.messages);
-    appState.messages.push(createMessage("assistant", result.reply, result.thinking));
+    const result = await requestAssistantReply(text, historyForRequest, {
+      onProgress: (partial) => {
+        updateStreamingAssistantMessage(
+          assistantMessage,
+          partial.thinking,
+          partial.reply
+        );
+      },
+    });
+    assistantMessage.content = result.reply;
+    assistantMessage.thinking = result.thinking;
     renderMessages();
     await writeState();
     window.setTimeout(() => {
@@ -1900,9 +2214,8 @@ async function handleSendMessage(event) {
     }, 0);
   } catch (error) {
     console.error(error);
-    appState.messages.push(
-      createMessage("assistant", `请求失败：${error.message || "未知错误"}`, "这次请求没有成功返回思考链内容。")
-    );
+    assistantMessage.content = `请求失败：${error.message || "未知错误"}`;
+    assistantMessage.thinking = "这次请求没有成功返回思考链内容。";
     renderMessages();
     await writeState();
   } finally {
