@@ -20,7 +20,12 @@ const APP_STATE_STORE = "appState";
 const MEMORY_STORE = "memories";
 const STATE_KEY = "main";
 const SHORT_TERM_TTL_MS = 72 * 60 * 60 * 1000;
+const MAX_CONTEXT_MESSAGES = 30;
+const AUTO_SUMMARY_ROUNDS = 10;
+const AUTO_SUMMARY_MESSAGE_COUNT = AUTO_SUMMARY_ROUNDS * 2;
 const MEMORY_EXPORT_VERSION = "memory-palace-v1";
+const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
+const LOCAL_EMBEDDING_DIMENSIONS = 48;
 const IMPRESSION_SECTIONS = ["profile", "relationship", "notes"];
 const IMPRESSION_LABELS = {
   profile: "基础认知",
@@ -46,7 +51,11 @@ const DEFAULT_STATE = {
     baseUrl: "https://api.openai.com/v1",
     apiKey: "",
     model: "",
+    embeddingModel: DEFAULT_EMBEDDING_MODEL,
     temperature: 0.9,
+  },
+  session: {
+    lastAutoSummaryRound: 0,
   },
   messages: [],
   worldbooks: [],
@@ -56,6 +65,11 @@ const dom = {
   panelTrack: document.getElementById("panel-track"),
   toolGrid: document.getElementById("tool-grid"),
   messages: document.getElementById("messages"),
+  bulkSelectBar: document.getElementById("bulk-select-bar"),
+  bulkSelectCount: document.getElementById("bulk-select-count"),
+  bulkCancelBtn: document.getElementById("bulk-cancel-btn"),
+  bulkDeleteBtn: document.getElementById("bulk-delete-btn"),
+  chatStatus: document.getElementById("chat-status"),
   emptyTemplate: document.getElementById("empty-state-template"),
   composerForm: document.getElementById("composer-form"),
   messageInput: document.getElementById("message-input"),
@@ -108,6 +122,10 @@ const dom = {
   worldbookFormResetBtn: document.getElementById("worldbook-form-reset-btn"),
   worldbookList: document.getElementById("worldbook-list"),
   worldbookCount: document.getElementById("worldbook-count"),
+  messageEditSheet: document.getElementById("message-edit-sheet"),
+  messageEditTitle: document.getElementById("message-edit-title"),
+  messageEditInput: document.getElementById("message-edit-input"),
+  saveMessageEditBtn: document.getElementById("save-message-edit-btn"),
 };
 
 let appState = typeof structuredClone === "function"
@@ -120,6 +138,12 @@ let pointerStart = null;
 let currentMemoryRoom = "long_term";
 let editingMemoryId = "";
 let editingWorldbookId = "";
+let autoSummaryRunning = false;
+let activeMessageMenuId = "";
+let bulkDeleteMode = false;
+let bulkSelectedMessageIds = new Set();
+let editingMessageId = "";
+let longPressState = null;
 
 const shaderCanvas = document.getElementById("shader-canvas");
 
@@ -152,6 +176,20 @@ function formatDateTimeInput(dateValue) {
   return `${year}-${month}-${day}T${hh}:${mm}`;
 }
 
+function getWeekdayLabel(date = new Date()) {
+  const weekdayMap = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
+  return weekdayMap[date.getDay()] || "星期日";
+}
+
+function buildHiddenTimePrefix(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `[发送于：${year}/${month}/${day} ${hh}:${mm} ${getWeekdayLabel(date)}]`;
+}
+
 function escapeHtml(text) {
   return String(text || "").replace(/[&<>"']/g, (char) => {
     const map = {
@@ -165,6 +203,32 @@ function escapeHtml(text) {
   });
 }
 
+function createMessageId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `msg_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeMessageRecord(raw = {}) {
+  return {
+    id: String(raw.id || createMessageId()),
+    role: raw.role === "assistant" ? "assistant" : "user",
+    content: String(raw.content || ""),
+    thinking: String(raw.thinking || ""),
+    timestamp: String(raw.timestamp || formatTime(new Date())),
+  };
+}
+
+function createMessage(role, content, thinking = "") {
+  return normalizeMessageRecord({
+    role,
+    content,
+    thinking,
+    timestamp: formatTime(new Date()),
+  });
+}
+
 function normalizeState(raw) {
   return {
     profile: {
@@ -175,7 +239,13 @@ function normalizeState(raw) {
       ...DEFAULT_STATE.api,
       ...(raw?.api || {}),
     },
-    messages: Array.isArray(raw?.messages) ? raw.messages : [],
+    session: {
+      ...DEFAULT_STATE.session,
+      ...(raw?.session || {}),
+    },
+    messages: Array.isArray(raw?.messages)
+      ? raw.messages.map(normalizeMessageRecord)
+      : [],
     worldbooks: Array.isArray(raw?.worldbooks)
       ? raw.worldbooks.map(normalizeWorldbookRecord).filter((item) => item.content)
       : [],
@@ -266,7 +336,7 @@ function normalizeVectorLength(vector) {
   return vector.map((value) => value / magnitude);
 }
 
-function generateTextEmbedding(text, dimensions = 48) {
+function generateTextEmbedding(text, dimensions = LOCAL_EMBEDDING_DIMENSIONS) {
   const source = String(text || "").trim().toLowerCase();
   const vector = new Array(dimensions).fill(0);
   if (!source) return vector;
@@ -315,24 +385,72 @@ function cosineSimilarity(vectorA, vectorB) {
   return dot / (Math.sqrt(magA) * Math.sqrt(magB));
 }
 
+function calculateBestSimilarity(memoryEmbedding, queryCandidates) {
+  const memoryVector = Array.isArray(memoryEmbedding) ? memoryEmbedding : [];
+  if (!memoryVector.length) return 0;
+
+  let best = 0;
+  queryCandidates.forEach((candidate) => {
+    const vector = Array.isArray(candidate?.vector) ? candidate.vector : [];
+    if (!vector.length) return;
+    if (vector.length !== memoryVector.length) return;
+    best = Math.max(best, Math.max(0, cosineSimilarity(vector, memoryVector)));
+  });
+  return best;
+}
+
+async function buildQueryEmbeddingCandidates(inputEmbedding) {
+  if (Array.isArray(inputEmbedding)) {
+    return [
+      {
+        kind: "provided",
+        vector: normalizeEmbedding(inputEmbedding, ""),
+      },
+    ];
+  }
+
+  const text = String(inputEmbedding || "").trim();
+  if (!text) return [];
+
+  const candidates = [
+    {
+      kind: "local",
+      vector: generateTextEmbedding(text),
+    },
+  ];
+
+  try {
+    const remoteVectors = await fetchEmbeddingsBatch([text]);
+    const remoteVector = Array.isArray(remoteVectors?.[0]) ? remoteVectors[0] : [];
+    if (remoteVector.length && remoteVector.length !== LOCAL_EMBEDDING_DIMENSIONS) {
+      candidates.push({
+        kind: "remote",
+        vector: normalizeEmbedding(remoteVector, text),
+      });
+    }
+  } catch (error) {
+    console.error("构建查询向量失败，已回退本地向量", error);
+  }
+
+  return candidates;
+}
+
 function calculateStrength(memory) {
-  const roomBaseHours = {
-    long_term: 120,
-    schedule: 96,
-    short_term: 18,
-    impression: 144,
-  };
-  const baseHours = roomBaseHours[memory.room] || 24;
-  const importanceFactor = normalizeImportance(memory.importance) * 16;
-  const retrievalBonus = Math.max(0, Number(memory.retrieval_count) || 0) * 20;
-  return (baseHours + importanceFactor + retrievalBonus) * 60 * 60 * 1000;
+  const importance = normalizeImportance(memory.importance);
+  const retrievalCount = Math.max(0, Number(memory.retrieval_count) || 0);
+  return importance * 5 * (retrievalCount + 1);
 }
 
 function calculateRetention(memory, nowTs = Date.now()) {
   const anchor = normalizeTimestamp(memory.last_accessed || memory.created_at, nowTs);
-  const elapsed = Math.max(0, nowTs - anchor);
-  const strength = calculateStrength(memory);
-  return Math.exp(-elapsed / strength);
+  const elapsedMs = Math.max(0, nowTs - anchor);
+  const elapsedDays = elapsedMs / (24 * 60 * 60 * 1000);
+  const strengthDays = Math.max(0.0001, calculateStrength(memory));
+  const retention = Math.exp(-elapsedDays / strengthDays);
+  if (normalizeImportance(memory.importance) >= 8) {
+    return Math.max(0.5, retention);
+  }
+  return retention;
 }
 
 function getRetentionState(retention) {
@@ -441,6 +559,21 @@ function showTempStatus(target, message) {
   note.textContent = message;
   target.insertAdjacentElement("afterend", note);
   window.setTimeout(() => note.remove(), 2600);
+}
+
+function showChatStatus(message, timeout = 2600) {
+  if (!dom.chatStatus) return;
+  dom.chatStatus.textContent = message;
+  if (showChatStatus.timer) {
+    window.clearTimeout(showChatStatus.timer);
+  }
+  if (message) {
+    showChatStatus.timer = window.setTimeout(() => {
+      if (dom.chatStatus.textContent === message) {
+        dom.chatStatus.textContent = "";
+      }
+    }, timeout);
+  }
 }
 
 function initDB() {
@@ -586,10 +719,8 @@ async function saveMemory(content, embedding, room, importance, extra = {}) {
 }
 
 async function retrieveMemory(inputEmbedding, options = {}) {
-  const queryVector = normalizeEmbedding(
-    Array.isArray(inputEmbedding) ? inputEmbedding : null,
-    typeof inputEmbedding === "string" ? inputEmbedding : ""
-  );
+  const queryCandidates = await buildQueryEmbeddingCandidates(inputEmbedding);
+  if (!queryCandidates.length) return [];
   const nowTs = Date.now();
   const limit = Math.max(3, Math.min(5, Number(options.limit) || 5));
   const sourceContact = String(options.sourceContact || "").trim();
@@ -601,7 +732,7 @@ async function retrieveMemory(inputEmbedding, options = {}) {
     .map((memory) => {
       const retention = calculateRetention(memory, nowTs);
       if (retention <= 0.3) return null;
-      const similarity = Math.max(0, cosineSimilarity(queryVector, memory.embedding));
+      const similarity = calculateBestSimilarity(memory.embedding, queryCandidates);
       if (similarity <= 0) return null;
       const score = similarity * retention;
       return {
@@ -694,8 +825,239 @@ function buildWorldbookContext() {
     .join("\n\n");
 }
 
+function getSlidingWindowMessagesFromList(messages, limit = MAX_CONTEXT_MESSAGES) {
+  const list = Array.isArray(messages) ? messages : [];
+  return list.slice(-limit);
+}
+
+function getSlidingWindowMessages(limit = MAX_CONTEXT_MESSAGES) {
+  return getSlidingWindowMessagesFromList(appState.messages, limit);
+}
+
+function getCompletedRounds(messages = appState.messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const userCount = list.filter((message) => message.role === "user").length;
+  const assistantCount = list.filter((message) => message.role === "assistant").length;
+  return Math.min(userCount, assistantCount);
+}
+
+function getAutoSummaryWindowMessages() {
+  return getSlidingWindowMessages(AUTO_SUMMARY_MESSAGE_COUNT);
+}
+
+function serializeMessagesForSummary(messages) {
+  return messages
+    .map((message, index) => {
+      const role = message.role === "assistant" ? "AI" : "用户";
+      const timestamp = message.timestamp || `消息${index + 1}`;
+      return `[${timestamp}] ${role}: ${message.content || ""}`;
+    })
+    .join("\n");
+}
+
+function normalizeExtractedRoom(room) {
+  const value = String(room || "").trim().toLowerCase();
+  if (["long_term", "longterm", "long-term"].includes(value)) return "long_term";
+  if (["schedule", "calendar"].includes(value)) return "schedule";
+  if (value === "impression") return "impression";
+  return "short_term";
+}
+
+async function fetchEmbeddingsBatch(texts) {
+  const cleanTexts = (Array.isArray(texts) ? texts : []).map((text) => String(text || "").trim());
+  if (!cleanTexts.length) return [];
+
+  const { api } = appState;
+  const baseUrl = api.baseUrl.trim().replace(/\/+$/, "");
+  const apiKey = api.apiKey.trim();
+  const embeddingModel = api.embeddingModel?.trim() || DEFAULT_EMBEDDING_MODEL;
+
+  if (!baseUrl || !apiKey) {
+    return cleanTexts.map((text) => generateTextEmbedding(text));
+  }
+
+  try {
+    const response = await fetch(`${baseUrl}/embeddings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: embeddingModel,
+        input: cleanTexts,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Embedding 请求失败：${response.status}`);
+    }
+
+    const data = await response.json();
+    const embeddings = Array.isArray(data?.data) ? data.data : [];
+    return cleanTexts.map((text, index) => {
+      const vector = embeddings[index]?.embedding;
+      return Array.isArray(vector) && vector.length ? vector : generateTextEmbedding(text);
+    });
+  } catch (error) {
+    console.error("Embedding API 失败，已回退本地向量", error);
+    return cleanTexts.map((text) => generateTextEmbedding(text));
+  }
+}
+
+async function extractStructuredMemoriesFromMessages(messages) {
+  const { api, profile } = appState;
+  const baseUrl = api.baseUrl.trim().replace(/\/+$/, "");
+  const apiKey = api.apiKey.trim();
+  const model = api.model.trim();
+  if (!baseUrl || !apiKey || !model) {
+    return [];
+  }
+
+  const transcript = serializeMessagesForSummary(messages);
+  const systemPrompt = `
+你是一个后台记忆提取引擎。请完整阅读最近 10 轮对话，提取其中真正值得长期保存的用户信息，并输出结构化 JSON。
+
+提取目标：
+1. long_term：长期事实、稳定偏好、身份背景、重要经历、长期目标
+2. schedule：带明确时间节点的计划、安排、预约、事件
+3. short_term：近几天内有效的即时细节、短期状态、临时事项
+4. impression：角色对用户形成的主观印象
+
+规则：
+1. 过滤掉无价值闲聊、情绪口头禅、纯陪伴性废话、重复信息。
+2. importance 必须是 1-10 的整数。
+3. impression 类型必须额外提供 impression_section，且只能是 profile / relationship / notes。
+4. schedule 类型若能提取到明确时间，请写入 schedule_at；否则写空字符串。
+5. content 要简洁明确，适合直接存入记忆库。
+6. 不要输出任何解释，不要使用 Markdown。
+7. 如果没有值得提取的信息，返回空数组。
+
+只返回以下 JSON 结构：
+{
+  "memories": [
+    {
+      "room": "long_term",
+      "content": "用户最近在准备职业资格考试",
+      "importance": 8,
+      "impression_section": "",
+      "schedule_at": ""
+    }
+  ]
+}
+`.trim();
+
+  const userPrompt = `
+[角色]
+${profile.partnerName || "与你对话的人"}
+
+[最近 10 轮对话全文]
+${transcript || "无"}
+`.trim();
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `后台提取失败：${response.status}`);
+  }
+
+  const data = await response.json();
+  const rawContent = data?.choices?.[0]?.message?.content;
+  const content = Array.isArray(rawContent)
+    ? rawContent
+        .map((part) => (typeof part === "string" ? part : part?.text || ""))
+        .join("")
+    : rawContent;
+  const parsed = safeJsonParse(content || "{}");
+  return Array.isArray(parsed?.memories) ? parsed.memories : [];
+}
+
+async function persistExtractedMemories(items) {
+  const records = (Array.isArray(items) ? items : [])
+    .map((item) => {
+      const room = normalizeExtractedRoom(item?.room);
+      return {
+        room,
+        content: String(item?.content || "").trim(),
+        importance: normalizeImportance(item?.importance),
+        impression_section: room === "impression" ? normalizeImpressionSection(item?.impression_section) : "",
+        schedule_at:
+          room === "schedule" && item?.schedule_at
+            ? normalizeTimestamp(item.schedule_at, Date.now())
+            : null,
+      };
+    })
+    .filter((item) => item.content);
+
+  if (!records.length) return [];
+
+  const embeddings = await fetchEmbeddingsBatch(records.map((item) => item.content));
+  const saved = [];
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const savedRecord = await saveMemory(
+      record.content,
+      embeddings[index],
+      record.room,
+      record.importance,
+      {
+        source_contact: appState.profile.partnerName?.trim() || "",
+        impression_section: record.impression_section,
+        schedule_at: record.schedule_at,
+      }
+    );
+    saved.push(savedRecord);
+  }
+
+  return saved;
+}
+
+async function maybeRunAutoMemorySummary() {
+  if (autoSummaryRunning) return;
+
+  const completedRounds = getCompletedRounds(appState.messages);
+  const lastAutoSummaryRound = Number(appState.session?.lastAutoSummaryRound) || 0;
+  if (!completedRounds || completedRounds % AUTO_SUMMARY_ROUNDS !== 0) return;
+  if (completedRounds <= lastAutoSummaryRound) return;
+
+  const messages = getAutoSummaryWindowMessages();
+  if (messages.length < AUTO_SUMMARY_MESSAGE_COUNT) return;
+
+  autoSummaryRunning = true;
+  try {
+    const extracted = await extractStructuredMemoriesFromMessages(messages);
+    await persistExtractedMemories(extracted);
+    appState.session.lastAutoSummaryRound = completedRounds;
+    await writeState();
+    if (dom.memorySheet?.classList.contains("is-open")) {
+      await renderMemoryList();
+    }
+  } catch (error) {
+    console.error("后台自动总结失败", error);
+  } finally {
+    autoSummaryRunning = false;
+  }
+}
+
 async function buildMemoryContext(messageText) {
-  const results = await retrieveMemory(generateTextEmbedding(messageText), {
+  const results = await retrieveMemory(messageText, {
     limit: 5,
     sourceContact: appState.profile.partnerName?.trim() || "",
   });
@@ -845,12 +1207,209 @@ function renderApiForm() {
   dom.temperatureInput.value = String(api.temperature ?? 0.9);
 }
 
+function updateBulkSelectBar() {
+  if (!dom.bulkSelectBar) return;
+  dom.bulkSelectBar.hidden = !bulkDeleteMode;
+  dom.bulkSelectCount.textContent = `已选择 ${bulkSelectedMessageIds.size} 条`;
+  dom.bulkDeleteBtn.disabled = bulkSelectedMessageIds.size === 0;
+}
+
+function closeMessageMenu() {
+  if (!activeMessageMenuId) return;
+  activeMessageMenuId = "";
+  renderMessages();
+}
+
+function cancelLongPress() {
+  if (longPressState?.timer) {
+    window.clearTimeout(longPressState.timer);
+  }
+  longPressState = null;
+}
+
+function startLongPress(messageId, pointerId, x, y) {
+  cancelLongPress();
+  longPressState = {
+    messageId,
+    pointerId,
+    startX: x,
+    startY: y,
+    fired: false,
+    timer: window.setTimeout(() => {
+      activeMessageMenuId = messageId;
+      longPressState.fired = true;
+      renderMessages();
+    }, 420),
+  };
+}
+
+function enterBulkDeleteMode(initialMessageId = "") {
+  bulkDeleteMode = true;
+  activeMessageMenuId = "";
+  bulkSelectedMessageIds = new Set(initialMessageId ? [initialMessageId] : []);
+  updateBulkSelectBar();
+  renderMessages();
+}
+
+function exitBulkDeleteMode() {
+  bulkDeleteMode = false;
+  bulkSelectedMessageIds = new Set();
+  updateBulkSelectBar();
+  renderMessages();
+}
+
+function toggleBulkMessageSelection(messageId) {
+  if (!bulkDeleteMode) return;
+  if (bulkSelectedMessageIds.has(messageId)) {
+    bulkSelectedMessageIds.delete(messageId);
+  } else {
+    bulkSelectedMessageIds.add(messageId);
+  }
+  updateBulkSelectBar();
+  renderMessages();
+}
+
+async function deleteSelectedMessages() {
+  if (!bulkSelectedMessageIds.size) return;
+  appState.messages = appState.messages.filter((message) => !bulkSelectedMessageIds.has(message.id));
+  exitBulkDeleteMode();
+  await writeState();
+  showChatStatus("已删除所选消息。");
+}
+
+function openMessageEditModal(messageId) {
+  const message = appState.messages.find((item) => item.id === messageId);
+  if (!message) return;
+  editingMessageId = messageId;
+  activeMessageMenuId = "";
+  dom.messageEditTitle.textContent = message.role === "assistant" ? "编辑 AI 消息" : "编辑用户消息";
+  dom.messageEditInput.value = message.content || "";
+  openSheet(dom.messageEditSheet);
+  renderMessages();
+  window.setTimeout(() => {
+    dom.messageEditInput.focus();
+    dom.messageEditInput.setSelectionRange(
+      dom.messageEditInput.value.length,
+      dom.messageEditInput.value.length
+    );
+  }, 0);
+}
+
+function closeMessageEditModal() {
+  editingMessageId = "";
+  dom.messageEditInput.value = "";
+  closeSheet(dom.messageEditSheet);
+}
+
+async function saveEditedMessage() {
+  const nextContent = dom.messageEditInput.value.trim();
+  if (!editingMessageId) return;
+  if (!nextContent) {
+    showTempStatus(dom.saveMessageEditBtn, "消息内容不能为空。");
+    return;
+  }
+  const target = appState.messages.find((message) => message.id === editingMessageId);
+  if (!target) return;
+  target.content = nextContent;
+  await writeState();
+  closeMessageEditModal();
+  renderMessages();
+  showChatStatus("消息已更新。");
+}
+
+function findMessageIndexById(messageId) {
+  return appState.messages.findIndex((message) => message.id === messageId);
+}
+
+function findPreviousUserMessage(historyMessages) {
+  const list = Array.isArray(historyMessages) ? historyMessages : [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (list[index]?.role === "user") {
+      return list[index];
+    }
+  }
+  return null;
+}
+
+async function retryAssistantMessage(messageId) {
+  const messageIndex = findMessageIndexById(messageId);
+  if (messageIndex < 0) return;
+  const targetMessage = appState.messages[messageIndex];
+  if (targetMessage.role !== "assistant") return;
+
+  const historyBefore = appState.messages.slice(0, messageIndex);
+  const latestUserMessage = findPreviousUserMessage(historyBefore);
+  if (!latestUserMessage) {
+    showChatStatus("这条 AI 消息前没有可重试的用户消息。", 3200);
+    return;
+  }
+
+  activeMessageMenuId = "";
+  appState.messages.splice(messageIndex, 1);
+  renderMessages();
+  await writeState();
+  setSending(true);
+
+  try {
+    const result = await requestAssistantReply(latestUserMessage.content, historyBefore);
+    appState.messages.splice(
+      messageIndex,
+      0,
+      createMessage("assistant", result.reply, result.thinking)
+    );
+    renderMessages();
+    await writeState();
+    showChatStatus("已重新生成这条 AI 消息。");
+  } catch (error) {
+    console.error(error);
+    appState.messages.splice(
+      messageIndex,
+      0,
+      createMessage("assistant", `请求失败：${error.message || "未知错误"}`, "这次重试没有成功返回思考链内容。")
+    );
+    renderMessages();
+    await writeState();
+    showChatStatus("重试失败。", 3200);
+  } finally {
+    setSending(false);
+  }
+}
+
+function createMessageActionButton(action) {
+  const labels = {
+    retry: "重试",
+    delete: "删除",
+    edit: "编辑",
+  };
+  return `<button class="message-action-btn" type="button" data-message-action="${action}">${labels[action]}</button>`;
+}
+
+function getMessageActions(role) {
+  return role === "assistant" ? ["retry", "delete", "edit"] : ["delete", "edit"];
+}
+
 function createMessageElement(message, index) {
   const row = document.createElement("article");
   row.className = `message-row ${message.role === "user" ? "user" : "ai"}`;
   row.dataset.index = String(index);
+  row.dataset.messageId = message.id;
+  if (bulkDeleteMode) {
+    row.classList.add("bulk-mode");
+  }
+  if (bulkSelectedMessageIds.has(message.id)) {
+    row.classList.add("selected");
+  }
+  if (activeMessageMenuId === message.id) {
+    row.classList.add("menu-open");
+  }
 
   const showThinking = message.role === "assistant" && message.thinking;
+  const showActionMenu = activeMessageMenuId === message.id;
+  const actionMenuHtml = showActionMenu
+    ? `<div class="message-action-menu">${getMessageActions(message.role)
+        .map(createMessageActionButton)
+        .join("")}</div>`
+    : "";
   const avatarHtml =
     message.role === "assistant"
       ? `<div class="avatar ${
@@ -864,13 +1423,28 @@ function createMessageElement(message, index) {
 
   row.innerHTML = `
     ${
-      showThinking
-        ? '<div class="message-head"><button class="thinking-trigger" type="button">Thinking</button></div>'
+      showThinking || showActionMenu
+        ? `<div class="message-head">${
+            message.role === "assistant"
+              ? `${
+                  showThinking
+                    ? '<button class="thinking-trigger" type="button">Thinking</button>'
+                    : ""
+                }${actionMenuHtml}`
+              : actionMenuHtml
+          }</div>`
         : ""
     }
     <div class="message-main">
       ${avatarHtml}
       <div class="bubble-wrap">
+        ${
+          bulkDeleteMode
+            ? `<button class="message-select-toggle" type="button" aria-label="${
+                bulkSelectedMessageIds.has(message.id) ? "取消选择消息" : "选择消息"
+              }">${bulkSelectedMessageIds.has(message.id) ? "✓" : ""}</button>`
+            : ""
+        }
         <div class="bubble">${escapeHtml(message.content)}</div>
         <div class="time">${message.timestamp}</div>
       </div>
@@ -879,16 +1453,74 @@ function createMessageElement(message, index) {
 
   if (showThinking) {
     row.querySelector(".thinking-trigger")?.addEventListener("click", () => {
+      if (bulkDeleteMode) return;
       activeThinking = message.thinking || "";
       dom.thinkingContent.textContent = activeThinking;
       openSheet(dom.thinkingSheet);
     });
   }
 
+  const bubbleWrap = row.querySelector(".bubble-wrap");
+  if (bulkDeleteMode) {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest(".message-select-toggle")) return;
+      if (event.target.closest(".thinking-trigger")) return;
+      toggleBulkMessageSelection(message.id);
+    });
+    row.querySelector(".message-select-toggle")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleBulkMessageSelection(message.id);
+    });
+  } else if (bubbleWrap) {
+    bubbleWrap.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      startLongPress(message.id, event.pointerId, event.clientX, event.clientY);
+    });
+    bubbleWrap.addEventListener("pointermove", (event) => {
+      if (!longPressState || longPressState.pointerId !== event.pointerId) return;
+      const dx = Math.abs(event.clientX - longPressState.startX);
+      const dy = Math.abs(event.clientY - longPressState.startY);
+      if (dx > 10 || dy > 10) {
+        cancelLongPress();
+      }
+    });
+    bubbleWrap.addEventListener("pointerup", () => {
+      const fired = Boolean(longPressState?.fired);
+      cancelLongPress();
+      if (fired) {
+        window.setTimeout(() => {
+          activeMessageMenuId = message.id;
+          renderMessages();
+        }, 0);
+      }
+    });
+    bubbleWrap.addEventListener("pointercancel", cancelLongPress);
+    bubbleWrap.addEventListener("pointerleave", () => {
+      if (!longPressState) return;
+      if (longPressState.fired) return;
+      cancelLongPress();
+    });
+  }
+
+  row.querySelectorAll("[data-message-action]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const action = button.dataset.messageAction;
+      if (action === "edit") {
+        openMessageEditModal(message.id);
+      } else if (action === "delete") {
+        enterBulkDeleteMode(message.id);
+      } else if (action === "retry") {
+        await retryAssistantMessage(message.id);
+      }
+    });
+  });
+
   return row;
 }
 
 function renderMessages() {
+  updateBulkSelectBar();
   dom.messages.innerHTML = "";
   if (!appState.messages.length) {
     dom.messages.appendChild(dom.emptyTemplate.content.cloneNode(true));
@@ -1130,8 +1762,8 @@ function safeJsonParse(text) {
   }
 }
 
-async function requestAssistantReply(latestUserText) {
-  const { api, messages } = appState;
+async function requestAssistantReply(latestUserText, historyMessages = appState.messages) {
+  const { api } = appState;
   const baseUrl = api.baseUrl.trim().replace(/\/+$/, "");
   if (!baseUrl || !api.apiKey.trim() || !api.model.trim()) {
     throw new Error("请先在工具箱 > 设置 中补全 Base URL、API Key 和模型名称。");
@@ -1144,6 +1776,26 @@ async function requestAssistantReply(latestUserText) {
     console.error("记忆检索失败", error);
   }
 
+  const hiddenTimePrefix = buildHiddenTimePrefix(new Date());
+  const windowMessages = getSlidingWindowMessagesFromList(historyMessages, MAX_CONTEXT_MESSAGES).map(
+    (message) => ({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: message.content,
+    })
+  );
+  const latestUserIndex = (() => {
+    for (let index = windowMessages.length - 1; index >= 0; index -= 1) {
+      if (windowMessages[index]?.role === "user") {
+        return index;
+      }
+    }
+    return -1;
+  })();
+  if (latestUserIndex >= 0) {
+    const originalContent = String(windowMessages[latestUserIndex].content || "");
+    windowMessages[latestUserIndex].content = `${hiddenTimePrefix}\n${originalContent}`;
+  }
+
   const payload = {
     model: api.model.trim(),
     temperature: Number(api.temperature ?? 0.9),
@@ -1153,10 +1805,7 @@ async function requestAssistantReply(latestUserText) {
         role: "system",
         content: buildSystemPrompt(memoryContext),
       },
-      ...messages.map((message) => ({
-        role: message.role === "assistant" ? "assistant" : "user",
-        content: message.content,
-      })),
+      ...windowMessages,
     ],
   };
 
@@ -1206,12 +1855,8 @@ async function handleSendMessage(event) {
   const text = dom.messageInput.value.trim();
   if (!text) return;
 
-  const userMessage = {
-    role: "user",
-    content: text,
-    thinking: "",
-    timestamp: formatTime(new Date()),
-  };
+  closeMessageMenu();
+  const userMessage = createMessage("user", text, "");
 
   appState.messages.push(userMessage);
   renderMessages();
@@ -1222,23 +1867,18 @@ async function handleSendMessage(event) {
   setSending(true);
 
   try {
-    const result = await requestAssistantReply(text);
-    appState.messages.push({
-      role: "assistant",
-      content: result.reply,
-      thinking: result.thinking,
-      timestamp: formatTime(new Date()),
-    });
+    const result = await requestAssistantReply(text, appState.messages);
+    appState.messages.push(createMessage("assistant", result.reply, result.thinking));
     renderMessages();
     await writeState();
+    window.setTimeout(() => {
+      void maybeRunAutoMemorySummary();
+    }, 0);
   } catch (error) {
     console.error(error);
-    appState.messages.push({
-      role: "assistant",
-      content: `请求失败：${error.message || "未知错误"}`,
-      thinking: "这次请求没有成功返回思考链内容。",
-      timestamp: formatTime(new Date()),
-    });
+    appState.messages.push(
+      createMessage("assistant", `请求失败：${error.message || "未知错误"}`, "这次请求没有成功返回思考链内容。")
+    );
     renderMessages();
     await writeState();
   } finally {
@@ -1405,7 +2045,7 @@ async function handleMemorySearch() {
     return;
   }
   try {
-    const results = await retrieveMemory(generateTextEmbedding(text), {
+    const results = await retrieveMemory(text, {
       limit: 5,
       sourceContact: dom.memorySourceContact.value.trim(),
     });
@@ -1604,6 +2244,8 @@ async function saveApiSettings() {
   appState.api.baseUrl = dom.apiBaseUrl.value.trim();
   appState.api.apiKey = dom.apiKey.value.trim();
   appState.api.model = dom.apiModelName.value.trim();
+  appState.api.embeddingModel =
+    appState.api.embeddingModel?.trim() || DEFAULT_EMBEDDING_MODEL;
   appState.api.temperature = Number(dom.temperatureInput.value || 0.9);
   await writeState();
   closeSheet(dom.apiSheet);
@@ -1693,12 +2335,16 @@ function bindSheetClosers() {
   document.querySelectorAll("[data-close-worldbook]").forEach((element) => {
     element.addEventListener("click", () => closeSheet(dom.worldbookSheet));
   });
+  document.querySelectorAll("[data-close-message-edit]").forEach((element) => {
+    element.addEventListener("click", closeMessageEditModal);
+  });
 }
 
 function setupEvents() {
   renderToolGrid();
   bindSheetClosers();
   bindSwipeNavigation();
+  updateBulkSelectBar();
 
   dom.chatSettingsTrigger.addEventListener("click", () => openSheet(dom.profileSheet));
   dom.saveProfileBtn.addEventListener("click", saveProfile);
@@ -1712,6 +2358,9 @@ function setupEvents() {
   dom.temperatureRange.addEventListener("input", () => syncTemperature(true));
   dom.temperatureInput.addEventListener("input", () => syncTemperature(false));
   dom.composerForm.addEventListener("submit", handleSendMessage);
+  dom.bulkCancelBtn.addEventListener("click", exitBulkDeleteMode);
+  dom.bulkDeleteBtn.addEventListener("click", deleteSelectedMessages);
+  dom.saveMessageEditBtn.addEventListener("click", saveEditedMessage);
   dom.messageInput.addEventListener("input", autoGrowTextarea);
   dom.messageInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -1735,6 +2384,25 @@ function setupEvents() {
     } finally {
       dom.avatarInput.value = "";
     }
+  });
+  dom.messageEditInput.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      void saveEditedMessage();
+    }
+  });
+  dom.messages.addEventListener("scroll", () => {
+    if (activeMessageMenuId) {
+      activeMessageMenuId = "";
+      renderMessages();
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!activeMessageMenuId) return;
+    if (event.target.closest(".message-action-menu")) return;
+    if (event.target.closest(".bubble-wrap")) return;
+    activeMessageMenuId = "";
+    renderMessages();
   });
 
   document.querySelectorAll("[data-profile-tab]").forEach((button) => {

@@ -50,7 +50,19 @@
             </button>
           </header>
 
+          <div class="bulk-select-bar" id="bulk-select-bar" hidden>
+            <span id="bulk-select-count">已选择 0 条</span>
+            <div class="bulk-select-actions">
+              <button class="secondary-btn" id="bulk-cancel-btn" type="button">取消</button>
+              <button class="primary-save bulk-delete-btn" id="bulk-delete-btn" type="button">
+                删除所选
+              </button>
+            </div>
+          </div>
+
           <main class="messages" id="messages" aria-live="polite"></main>
+
+          <p class="chat-status" id="chat-status" aria-live="polite"></p>
 
           <form class="composer" id="composer-form">
             <label class="sr-only" for="message-input">输入消息</label>
@@ -374,6 +386,26 @@
           </div>
           <div class="worldbook-list" id="worldbook-list"></div>
         </section>
+      </div>
+    </div>
+
+    <div class="sheet settings-sheet" id="message-edit-sheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-close-message-edit></div>
+      <div class="sheet-panel profile-panel">
+        <button class="sheet-close" type="button" data-close-message-edit>×</button>
+        <p class="sheet-kicker dark-text">Message Edit</p>
+        <label class="field">
+          <span id="message-edit-title">编辑消息</span>
+          <textarea
+            id="message-edit-input"
+            rows="8"
+            maxlength="4000"
+            placeholder="输入新的消息内容"
+          ></textarea>
+        </label>
+        <button class="primary-save" id="save-message-edit-btn" type="button">
+          保存修改
+        </button>
       </div>
     </div>
 
