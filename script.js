@@ -144,6 +144,7 @@ let bulkDeleteMode = false;
 let bulkSelectedMessageIds = new Set();
 let editingMessageId = "";
 let longPressState = null;
+let suppressNextMessageScrollClose = false;
 
 const shaderCanvas = document.getElementById("shader-canvas");
 
@@ -1214,10 +1215,10 @@ function updateBulkSelectBar() {
   dom.bulkDeleteBtn.disabled = bulkSelectedMessageIds.size === 0;
 }
 
-function closeMessageMenu() {
+function closeMessageMenu(options = {}) {
   if (!activeMessageMenuId) return;
   activeMessageMenuId = "";
-  renderMessages();
+  renderMessages({ preserveScroll: options.preserveScroll !== false });
 }
 
 function cancelLongPress() {
@@ -1237,8 +1238,11 @@ function startLongPress(messageId, pointerId, x, y) {
     fired: false,
     timer: window.setTimeout(() => {
       activeMessageMenuId = messageId;
-      longPressState.fired = true;
-      renderMessages();
+      if (longPressState) {
+        longPressState.fired = true;
+      }
+      suppressNextMessageScrollClose = true;
+      renderMessages({ preserveScroll: true });
     }, 420),
   };
 }
@@ -1248,14 +1252,14 @@ function enterBulkDeleteMode(initialMessageId = "") {
   activeMessageMenuId = "";
   bulkSelectedMessageIds = new Set(initialMessageId ? [initialMessageId] : []);
   updateBulkSelectBar();
-  renderMessages();
+  renderMessages({ preserveScroll: true });
 }
 
 function exitBulkDeleteMode() {
   bulkDeleteMode = false;
   bulkSelectedMessageIds = new Set();
   updateBulkSelectBar();
-  renderMessages();
+  renderMessages({ preserveScroll: true });
 }
 
 function toggleBulkMessageSelection(messageId) {
@@ -1266,7 +1270,7 @@ function toggleBulkMessageSelection(messageId) {
     bulkSelectedMessageIds.add(messageId);
   }
   updateBulkSelectBar();
-  renderMessages();
+  renderMessages({ preserveScroll: true });
 }
 
 async function deleteSelectedMessages() {
@@ -1285,7 +1289,7 @@ function openMessageEditModal(messageId) {
   dom.messageEditTitle.textContent = message.role === "assistant" ? "编辑 AI 消息" : "编辑用户消息";
   dom.messageEditInput.value = message.content || "";
   openSheet(dom.messageEditSheet);
-  renderMessages();
+  renderMessages({ preserveScroll: true });
   window.setTimeout(() => {
     dom.messageEditInput.focus();
     dom.messageEditInput.setSelectionRange(
@@ -1313,7 +1317,7 @@ async function saveEditedMessage() {
   target.content = nextContent;
   await writeState();
   closeMessageEditModal();
-  renderMessages();
+  renderMessages({ preserveScroll: true });
   showChatStatus("消息已更新。");
 }
 
@@ -1346,7 +1350,7 @@ async function retryAssistantMessage(messageId) {
 
   activeMessageMenuId = "";
   appState.messages.splice(messageIndex, 1);
-  renderMessages();
+  renderMessages({ preserveScroll: true });
   await writeState();
   setSending(true);
 
@@ -1474,6 +1478,9 @@ function createMessageElement(message, index) {
   } else if (bubbleWrap) {
     bubbleWrap.addEventListener("pointerdown", (event) => {
       if (event.pointerType === "mouse" && event.button !== 0) return;
+      if (event.cancelable) {
+        event.preventDefault();
+      }
       startLongPress(message.id, event.pointerId, event.clientX, event.clientY);
     });
     bubbleWrap.addEventListener("pointermove", (event) => {
@@ -1487,18 +1494,16 @@ function createMessageElement(message, index) {
     bubbleWrap.addEventListener("pointerup", () => {
       const fired = Boolean(longPressState?.fired);
       cancelLongPress();
-      if (fired) {
-        window.setTimeout(() => {
-          activeMessageMenuId = message.id;
-          renderMessages();
-        }, 0);
-      }
+      if (fired) return;
     });
     bubbleWrap.addEventListener("pointercancel", cancelLongPress);
     bubbleWrap.addEventListener("pointerleave", () => {
       if (!longPressState) return;
       if (longPressState.fired) return;
       cancelLongPress();
+    });
+    bubbleWrap.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
     });
   }
 
@@ -1519,7 +1524,10 @@ function createMessageElement(message, index) {
   return row;
 }
 
-function renderMessages() {
+function renderMessages(options = {}) {
+  const preserveScroll = Boolean(options.preserveScroll);
+  const previousScrollTop = dom.messages.scrollTop;
+  const previousScrollHeight = dom.messages.scrollHeight;
   updateBulkSelectBar();
   dom.messages.innerHTML = "";
   if (!appState.messages.length) {
@@ -1531,6 +1539,12 @@ function renderMessages() {
     dom.messages.appendChild(createMessageElement(message, index));
   });
   requestAnimationFrame(() => {
+    if (preserveScroll) {
+      const nextScrollHeight = dom.messages.scrollHeight;
+      const delta = nextScrollHeight - previousScrollHeight;
+      dom.messages.scrollTop = Math.max(0, previousScrollTop + delta);
+      return;
+    }
     dom.messages.scrollTop = dom.messages.scrollHeight;
   });
 }
@@ -2393,8 +2407,12 @@ function setupEvents() {
   });
   dom.messages.addEventListener("scroll", () => {
     if (activeMessageMenuId) {
+      if (suppressNextMessageScrollClose) {
+        suppressNextMessageScrollClose = false;
+        return;
+      }
       activeMessageMenuId = "";
-      renderMessages();
+      renderMessages({ preserveScroll: true });
     }
   });
   document.addEventListener("pointerdown", (event) => {

@@ -14,6 +14,7 @@
 
 * {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 
 html,
@@ -36,6 +37,31 @@ input,
 textarea,
 select {
   font: inherit;
+}
+
+button,
+.tool-item,
+.bubble-wrap,
+.bubble,
+.thinking-trigger,
+.message-action-btn,
+.message-select-toggle,
+.circle-action,
+.tool-icon-box,
+.tool-label {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+.tool-item,
+.bubble-wrap,
+.thinking-trigger,
+.message-action-btn,
+.message-select-toggle,
+.circle-action {
+  -webkit-touch-callout: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 button {
@@ -140,6 +166,7 @@ button {
   align-items: center;
   gap: 10px;
   padding: 0;
+  outline: none;
 }
 
 .tool-icon-box {
@@ -435,6 +462,9 @@ button {
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.72;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .message-row.user .bubble {
