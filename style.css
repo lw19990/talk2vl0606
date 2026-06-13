@@ -332,7 +332,8 @@ button {
 
 .message-row.ai .message-head {
   justify-content: flex-start;
-  padding-left: 48px;
+  padding-left: 40px;
+  margin-left: -8px;
 }
 
 .thinking-trigger {
@@ -422,6 +423,10 @@ button {
   align-items: flex-start;
 }
 
+.message-row.ai .message-main {
+  margin-left: -8px;
+}
+
 .message-row.bulk-mode .bubble-wrap {
   padding-left: 34px;
 }
@@ -468,12 +473,10 @@ button {
 }
 
 .message-row.user .bubble {
-  border-bottom-right-radius: 10px;
   background: #f2eee9;
 }
 
 .message-row.ai .bubble {
-  border-bottom-left-radius: 10px;
   background: #c2beba;
 }
 
@@ -483,24 +486,35 @@ button {
   padding: 0 6px;
 }
 
+.message-row.ai .time {
+  color: #9b9895;
+}
+
+.message-row.user .time {
+  color: #c2beba;
+}
+
 .composer {
   position: relative;
   margin: auto 4px 4px;
-  min-height: 82px;
-  background: #fff;
-  border-radius: 28px;
-  padding: 14px 72px 14px 16px;
-  box-shadow: 0 8px 24px #fffbed;
+  min-height: 0;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
 }
 
 .composer textarea {
   width: 100%;
-  min-height: 54px;
+  min-height: 82px;
   max-height: 140px;
   border: 0;
   resize: none;
   outline: 0;
-  background: transparent;
+  background: #fff;
+  border-radius: 28px;
+  padding: 14px 72px 14px 16px;
+  box-shadow: 0 8px 24px #fffbed;
   color: #121212;
   line-height: 1.55;
 }
