@@ -239,11 +239,19 @@ button {
 .messages {
   flex: 1;
   overflow: auto;
-  padding: 8px 4px 18px;
+  padding: 8px 4px 132px 0;
   display: flex;
   flex-direction: column;
   gap: 18px;
   scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.messages::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .bulk-select-bar {
@@ -277,11 +285,17 @@ button {
 }
 
 .chat-status {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: calc(90px + var(--safe-bottom));
   min-height: 20px;
-  margin: 0 10px 8px;
+  margin: 0;
   font-size: 13px;
   line-height: 1.5;
   color: rgba(20, 20, 19, 0.64);
+  pointer-events: none;
+  z-index: 2;
 }
 
 .empty-state {
@@ -333,7 +347,6 @@ button {
 .message-row.ai .message-head {
   justify-content: flex-start;
   padding-left: 40px;
-  margin-left: -8px;
 }
 
 .thinking-trigger {
@@ -423,10 +436,6 @@ button {
   align-items: flex-start;
 }
 
-.message-row.ai .message-main {
-  margin-left: -8px;
-}
-
 .message-row.bulk-mode .bubble-wrap {
   padding-left: 34px;
 }
@@ -495,13 +504,17 @@ button {
 }
 
 .composer {
-  position: relative;
-  margin: auto 4px 4px;
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: calc(4px + var(--safe-bottom));
+  margin: 0;
   min-height: 0;
   background: transparent;
   border-radius: 0;
   padding: 0;
   box-shadow: none;
+  z-index: 3;
 }
 
 .composer textarea {
@@ -1044,14 +1057,21 @@ button {
   }
 
   .messages {
-    padding-left: 10px;
+    padding-left: 6px;
     padding-right: 10px;
+  }
+
+  .chat-status {
+    left: 20px;
+    right: 20px;
   }
 
   .composer {
     max-width: 820px;
-    width: 100%;
-    align-self: center;
+    width: calc(100% - 40px);
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
   }
 
   .memory-tabs {
