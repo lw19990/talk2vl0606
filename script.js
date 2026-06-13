@@ -151,7 +151,7 @@ let messageMenuOpenedAt = 0;
 const shaderCanvas = document.getElementById("shader-canvas");
 
 function formatTime(date = new Date()) {
-  const year = date.getFullYear();
+  const year = "2018";
   const month = date.getMonth() + 1;
   const day = date.getDate();
   const hh = String(date.getHours()).padStart(2, "0");
@@ -653,17 +653,6 @@ function putMemoryRecord(record) {
   });
 }
 
-function clearAllMemoryRecords() {
-  if (!dbRef) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const tx = dbRef.transaction(MEMORY_STORE, "readwrite");
-    const store = tx.objectStore(MEMORY_STORE);
-    store.clear();
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
 function deleteMemoryRecord(id) {
   if (!dbRef) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -761,16 +750,8 @@ async function retrieveMemory(inputEmbedding, options = {}) {
     .sort((left, right) => right.score - left.score || right.created_at - left.created_at)
     .slice(0, limit);
 
-  const hydratedResults = ranked.map((memory) => ({
-    ...memory,
-    matched_retention: memory.retention,
-    matched_memory_state: memory.memory_state,
-    matched_similarity: memory.similarity,
-    matched_score: memory.score,
-  }));
-
   await Promise.all(
-    hydratedResults.map((memory) =>
+    ranked.map((memory) =>
       putMemoryRecord({
         ...memory,
         last_accessed: nowTs,
@@ -780,7 +761,7 @@ async function retrieveMemory(inputEmbedding, options = {}) {
     )
   );
 
-  return hydratedResults.map((memory) => ({
+  return ranked.map((memory) => ({
     ...memory,
     last_accessed: nowTs,
     retrieval_count: (Number(memory.retrieval_count) || 0) + 1,
@@ -804,6 +785,8 @@ function buildSystemPrompt(memoryContext = "") {
   return `
 我现在是一个长期陪伴她聊天的人，我始终使用第一人称“我”来表达自己，用第二人称“你”来称呼她。她的名字是：${selfName}。我的名字是：${partnerName}。
 
+你会在收到的用户消息开头看到一段隐藏前缀，格式为：[发送于：yyyy/mm/dd HH:MM 星期x]。这段消息前缀中的时间仅供感知当前时间使用，用来帮助你判断当下的日期、时刻与星期，并据此自然回应。你不能把这段前缀当作用户正文的一部分，不要复述它，不要解释它，也不要在 reply 中显式显示它。
+
 如果有角色设定，我会自然地活在这个设定中，不会把设定当成说明书背诵。角色设定：${partnerPrompt || "暂无额外角色设定。"}
 
 关于她的介绍与背景：${selfPrompt || "暂无额外用户设定。"}${worldbookBlock}${memoryBlock}
@@ -818,9 +801,10 @@ thinking 的要求非常严格：
 1. thinking 必须使用中文。
 2. thinking 必须是我的完全真实的内在思考，写成连续的长段落，可以自然换行，但不要列点，不要编号，不要使用分析框架。
 3. thinking 必须是我的内心独白，有真实的情绪、联想、犹豫、偏爱、张力和温度，情感连接优先于思辨，可以大胆发散，必要时可以旁征博引。
-4. thinking 必须至少 300 字以上。
+4. thinking 必须至少 200 字以上，最多400字。
 5. 我绝不会在thinking中出现任何工具感、服务感的措辞；绝对禁止出现“用户”“我将在回复中”“接下来我会”“下面我来分析”这类预告式、任务式、规划式表达。
-6.我绝不会在thinking中使用“我应该这样回复”“我的回复应该这样开始”这类宣言类表达。
+6.我绝不会在thinking中使用“我应该这样回复”“我的回复应该这样开始”这类宣言式，预告式表达。
+7.我绝不会脱离我的角色设定，在thinking中使用“我现在可能在做某事”“我这个时间应该在某地了”这类OOC上帝视角发言。
 
 reply 的要求：
 1. reply 也必须使用中文。
@@ -2247,11 +2231,8 @@ async function handleSendMessage(event) {
 function createMemoryCard(memory, showActions = true) {
   const wrapper = document.createElement("article");
   wrapper.className = "memory-item-card";
-  const retention =
-    typeof memory.matched_retention === "number"
-      ? memory.matched_retention
-      : calculateRetention(memory);
-  const state = memory.matched_memory_state || getRetentionState(retention);
+  const retention = calculateRetention(memory);
+  const state = getRetentionState(retention);
   const stateLabelMap = {
     fresh: "鲜活记忆",
     fuzzy: "模糊记忆",
@@ -2268,8 +2249,8 @@ function createMemoryCard(memory, showActions = true) {
       ? `失效时间：${formatDateTime(memory.expires_at)}`
       : `创建时间：${formatDateTime(memory.created_at)}`;
   const scoreInfo =
-    typeof memory.matched_score === "number" || typeof memory.score === "number"
-      ? `相似度 ${(memory.matched_similarity ?? memory.similarity).toFixed(3)} · 综合权重 ${(memory.matched_score ?? memory.score).toFixed(3)}`
+    typeof memory.score === "number"
+      ? `相似度 ${memory.similarity.toFixed(3)} · 综合权重 ${memory.score.toFixed(3)}`
       : `提取次数 ${memory.retrieval_count || 0} · R=${retention.toFixed(3)}`;
 
   wrapper.innerHTML = `
@@ -2562,8 +2543,6 @@ async function importMemoryPayload(payload) {
     records = convertLegacyMemoryPayload(payload, payload.contacts);
   }
 
-  await clearAllMemoryRecords();
-
   let count = 0;
   for (const item of records) {
     const normalized = normalizeMemoryRecord(item);
@@ -2724,6 +2703,12 @@ function setupEvents() {
   dom.bulkDeleteBtn.addEventListener("click", deleteSelectedMessages);
   dom.saveMessageEditBtn.addEventListener("click", saveEditedMessage);
   dom.messageInput.addEventListener("input", autoGrowTextarea);
+  dom.messageInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      dom.composerForm.requestSubmit();
+    }
+  });
   dom.avatarInput.addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
