@@ -653,6 +653,17 @@ function putMemoryRecord(record) {
   });
 }
 
+function clearAllMemoryRecords() {
+  if (!dbRef) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tx = dbRef.transaction(MEMORY_STORE, "readwrite");
+    const store = tx.objectStore(MEMORY_STORE);
+    store.clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 function deleteMemoryRecord(id) {
   if (!dbRef) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -750,8 +761,16 @@ async function retrieveMemory(inputEmbedding, options = {}) {
     .sort((left, right) => right.score - left.score || right.created_at - left.created_at)
     .slice(0, limit);
 
+  const hydratedResults = ranked.map((memory) => ({
+    ...memory,
+    matched_retention: memory.retention,
+    matched_memory_state: memory.memory_state,
+    matched_similarity: memory.similarity,
+    matched_score: memory.score,
+  }));
+
   await Promise.all(
-    ranked.map((memory) =>
+    hydratedResults.map((memory) =>
       putMemoryRecord({
         ...memory,
         last_accessed: nowTs,
@@ -761,7 +780,7 @@ async function retrieveMemory(inputEmbedding, options = {}) {
     )
   );
 
-  return ranked.map((memory) => ({
+  return hydratedResults.map((memory) => ({
     ...memory,
     last_accessed: nowTs,
     retrieval_count: (Number(memory.retrieval_count) || 0) + 1,
@@ -2228,8 +2247,11 @@ async function handleSendMessage(event) {
 function createMemoryCard(memory, showActions = true) {
   const wrapper = document.createElement("article");
   wrapper.className = "memory-item-card";
-  const retention = calculateRetention(memory);
-  const state = getRetentionState(retention);
+  const retention =
+    typeof memory.matched_retention === "number"
+      ? memory.matched_retention
+      : calculateRetention(memory);
+  const state = memory.matched_memory_state || getRetentionState(retention);
   const stateLabelMap = {
     fresh: "鲜活记忆",
     fuzzy: "模糊记忆",
@@ -2246,8 +2268,8 @@ function createMemoryCard(memory, showActions = true) {
       ? `失效时间：${formatDateTime(memory.expires_at)}`
       : `创建时间：${formatDateTime(memory.created_at)}`;
   const scoreInfo =
-    typeof memory.score === "number"
-      ? `相似度 ${memory.similarity.toFixed(3)} · 综合权重 ${memory.score.toFixed(3)}`
+    typeof memory.matched_score === "number" || typeof memory.score === "number"
+      ? `相似度 ${(memory.matched_similarity ?? memory.similarity).toFixed(3)} · 综合权重 ${(memory.matched_score ?? memory.score).toFixed(3)}`
       : `提取次数 ${memory.retrieval_count || 0} · R=${retention.toFixed(3)}`;
 
   wrapper.innerHTML = `
@@ -2539,6 +2561,8 @@ async function importMemoryPayload(payload) {
   } else if (payload && typeof payload === "object") {
     records = convertLegacyMemoryPayload(payload, payload.contacts);
   }
+
+  await clearAllMemoryRecords();
 
   let count = 0;
   for (const item of records) {
