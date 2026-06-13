@@ -2700,12 +2700,6 @@ function setupEvents() {
   dom.bulkDeleteBtn.addEventListener("click", deleteSelectedMessages);
   dom.saveMessageEditBtn.addEventListener("click", saveEditedMessage);
   dom.messageInput.addEventListener("input", autoGrowTextarea);
-  dom.messageInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      dom.composerForm.requestSubmit();
-    }
-  });
   dom.avatarInput.addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
