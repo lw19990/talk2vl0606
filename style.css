@@ -672,6 +672,11 @@ button {
   margin-top: 18px;
 }
 
+.memory-actions-single {
+  grid-template-columns: 1fr;
+  margin-top: 12px;
+}
+
 .memory-tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1017,6 +1022,26 @@ button {
 
 .dark-text {
   color: #141413;
+}
+
+.api-subsection {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(20, 20, 19, 0.08);
+}
+
+.api-subsection-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #141413;
+}
+
+.api-subsection-hint {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(20, 20, 19, 0.58);
 }
 
 .model-row,

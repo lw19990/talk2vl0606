@@ -52,6 +52,10 @@ const DEFAULT_STATE = {
     apiKey: "",
     model: "",
     embeddingModel: DEFAULT_EMBEDDING_MODEL,
+    memoryBaseUrl: "",
+    memoryApiKey: "",
+    memoryModel: "",
+    memoryEmbeddingModel: "",
     temperature: 0.9,
   },
   session: {
@@ -92,6 +96,10 @@ const dom = {
   apiBaseUrl: document.getElementById("api-base-url"),
   apiKey: document.getElementById("api-key"),
   apiModelName: document.getElementById("api-model-name"),
+  memoryApiBaseUrl: document.getElementById("memory-api-base-url"),
+  memoryApiKey: document.getElementById("memory-api-key"),
+  memoryApiModelName: document.getElementById("memory-api-model-name"),
+  memoryApiEmbeddingModelName: document.getElementById("memory-api-embedding-model-name"),
   fetchModelsBtn: document.getElementById("fetch-models-btn"),
   modelSelect: document.getElementById("model-select"),
   temperatureRange: document.getElementById("temperature-range"),
@@ -115,6 +123,7 @@ const dom = {
   memorySearchInput: document.getElementById("memory-search-input"),
   memorySearchBtn: document.getElementById("memory-search-btn"),
   memorySearchResults: document.getElementById("memory-search-results"),
+  manualMemorySummaryBtn: document.getElementById("manual-memory-summary-btn"),
   worldbookTitle: document.getElementById("worldbook-title"),
   worldbookContent: document.getElementById("worldbook-content"),
   worldbookEnabled: document.getElementById("worldbook-enabled"),
@@ -729,7 +738,7 @@ async function retrieveMemory(inputEmbedding, options = {}) {
   const sourceContact = String(options.sourceContact || "").trim();
   const allMemories = (await getAllMemoryRecords()).map(normalizeMemoryRecord);
 
-  const ranked = allMemories
+  const candidates = allMemories
     .filter((memory) => isMemoryVisible(memory, nowTs))
     .filter((memory) => memoryMatchesSource(memory, sourceContact))
     .map((memory) => {
@@ -746,12 +755,34 @@ async function retrieveMemory(inputEmbedding, options = {}) {
         memory_state: getRetentionState(retention),
       };
     })
-    .filter(Boolean)
+    .filter(Boolean);
+
+  const freshCandidates = candidates
+    .filter((memory) => memory.memory_state === "fresh")
+    .sort((left, right) => right.score - left.score || right.created_at - left.created_at);
+  const fuzzyCandidates = candidates
+    .filter((memory) => memory.memory_state === "fuzzy")
+    .sort((left, right) => right.score - left.score || right.created_at - left.created_at);
+
+  const fuzzySlotCount = fuzzyCandidates.length > 0 ? 1 : 0;
+  const freshSlotCount = Math.max(0, limit - fuzzySlotCount);
+  const ranked = [
+    ...freshCandidates.slice(0, freshSlotCount),
+    ...fuzzyCandidates.slice(0, fuzzySlotCount),
+  ]
     .sort((left, right) => right.score - left.score || right.created_at - left.created_at)
     .slice(0, limit);
 
+  const hydratedResults = ranked.map((memory) => ({
+    ...memory,
+    matched_retention: memory.retention,
+    matched_memory_state: memory.memory_state,
+    matched_similarity: memory.similarity,
+    matched_score: memory.score,
+  }));
+
   await Promise.all(
-    ranked.map((memory) =>
+    hydratedResults.map((memory) =>
       putMemoryRecord({
         ...memory,
         last_accessed: nowTs,
@@ -761,7 +792,7 @@ async function retrieveMemory(inputEmbedding, options = {}) {
     )
   );
 
-  return ranked.map((memory) => ({
+  return hydratedResults.map((memory) => ({
     ...memory,
     last_accessed: nowTs,
     retrieval_count: (Number(memory.retrieval_count) || 0) + 1,
@@ -870,14 +901,27 @@ function normalizeExtractedRoom(room) {
   return "short_term";
 }
 
+function getMemoryApiConfig() {
+  const { api } = appState;
+  return {
+    baseUrl: (api.memoryBaseUrl?.trim() || api.baseUrl || "").replace(/\/+$/, ""),
+    apiKey: api.memoryApiKey?.trim() || api.apiKey?.trim() || "",
+    model: api.memoryModel?.trim() || api.model?.trim() || "",
+    embeddingModel:
+      api.memoryEmbeddingModel?.trim() ||
+      api.embeddingModel?.trim() ||
+      DEFAULT_EMBEDDING_MODEL,
+  };
+}
+
 async function fetchEmbeddingsBatch(texts) {
   const cleanTexts = (Array.isArray(texts) ? texts : []).map((text) => String(text || "").trim());
   if (!cleanTexts.length) return [];
 
-  const { api } = appState;
-  const baseUrl = api.baseUrl.trim().replace(/\/+$/, "");
-  const apiKey = api.apiKey.trim();
-  const embeddingModel = api.embeddingModel?.trim() || DEFAULT_EMBEDDING_MODEL;
+  const memoryApiConfig = getMemoryApiConfig();
+  const baseUrl = memoryApiConfig.baseUrl;
+  const apiKey = memoryApiConfig.apiKey;
+  const embeddingModel = memoryApiConfig.embeddingModel;
 
   if (!baseUrl || !apiKey) {
     return cleanTexts.map((text) => generateTextEmbedding(text));
@@ -913,10 +957,11 @@ async function fetchEmbeddingsBatch(texts) {
 }
 
 async function extractStructuredMemoriesFromMessages(messages) {
-  const { api, profile } = appState;
-  const baseUrl = api.baseUrl.trim().replace(/\/+$/, "");
-  const apiKey = api.apiKey.trim();
-  const model = api.model.trim();
+  const { profile } = appState;
+  const memoryApiConfig = getMemoryApiConfig();
+  const baseUrl = memoryApiConfig.baseUrl;
+  const apiKey = memoryApiConfig.apiKey;
+  const model = memoryApiConfig.model;
   if (!baseUrl || !apiKey || !model) {
     return [];
   }
@@ -1036,6 +1081,21 @@ async function persistExtractedMemories(items) {
   return saved;
 }
 
+async function summarizeRecentConversationMemories() {
+  const messages = getAutoSummaryWindowMessages();
+  if (messages.length < AUTO_SUMMARY_MESSAGE_COUNT) {
+    return {
+      messages,
+      extracted: [],
+      saved: [],
+    };
+  }
+
+  const extracted = await extractStructuredMemoriesFromMessages(messages);
+  const saved = await persistExtractedMemories(extracted);
+  return { messages, extracted, saved };
+}
+
 async function maybeRunAutoMemorySummary() {
   if (autoSummaryRunning) return;
 
@@ -1049,8 +1109,7 @@ async function maybeRunAutoMemorySummary() {
 
   autoSummaryRunning = true;
   try {
-    const extracted = await extractStructuredMemoriesFromMessages(messages);
-    await persistExtractedMemories(extracted);
+    await summarizeRecentConversationMemories();
     appState.session.lastAutoSummaryRound = completedRounds;
     await writeState();
     if (dom.memorySheet?.classList.contains("is-open")) {
@@ -1060,6 +1119,42 @@ async function maybeRunAutoMemorySummary() {
     console.error("后台自动总结失败", error);
   } finally {
     autoSummaryRunning = false;
+  }
+}
+
+async function handleManualMemorySummary() {
+  if (autoSummaryRunning) {
+    showTempStatus(dom.manualMemorySummaryBtn, "后台总结正在进行中。");
+    return;
+  }
+
+  const messages = getAutoSummaryWindowMessages();
+  if (messages.length < AUTO_SUMMARY_MESSAGE_COUNT) {
+    showTempStatus(dom.manualMemorySummaryBtn, "最近不足 10 轮对话，暂无法总结。");
+    return;
+  }
+
+  autoSummaryRunning = true;
+  dom.manualMemorySummaryBtn.disabled = true;
+  const originalText = dom.manualMemorySummaryBtn.textContent;
+  dom.manualMemorySummaryBtn.textContent = "总结中...";
+
+  try {
+    const result = await summarizeRecentConversationMemories();
+    if (dom.memorySheet?.classList.contains("is-open")) {
+      await renderMemoryList();
+    }
+    showTempStatus(
+      dom.manualMemorySummaryBtn,
+      result.saved.length ? `已总结并写入 ${result.saved.length} 条记忆。` : "总结完成，但未提取到有效记忆。"
+    );
+  } catch (error) {
+    console.error("手动总结记忆失败", error);
+    showTempStatus(dom.manualMemorySummaryBtn, error.message || "手动总结失败。");
+  } finally {
+    autoSummaryRunning = false;
+    dom.manualMemorySummaryBtn.disabled = false;
+    dom.manualMemorySummaryBtn.textContent = originalText;
   }
 }
 
@@ -1210,6 +1305,10 @@ function renderApiForm() {
   dom.apiBaseUrl.value = api.baseUrl || "";
   dom.apiKey.value = api.apiKey || "";
   dom.apiModelName.value = api.model || "";
+  dom.memoryApiBaseUrl.value = api.memoryBaseUrl || "";
+  dom.memoryApiKey.value = api.memoryApiKey || "";
+  dom.memoryApiModelName.value = api.memoryModel || "";
+  dom.memoryApiEmbeddingModelName.value = api.memoryEmbeddingModel || "";
   dom.temperatureRange.value = String(api.temperature ?? 0.9);
   dom.temperatureInput.value = String(api.temperature ?? 0.9);
 }
@@ -2231,8 +2330,11 @@ async function handleSendMessage(event) {
 function createMemoryCard(memory, showActions = true) {
   const wrapper = document.createElement("article");
   wrapper.className = "memory-item-card";
-  const retention = calculateRetention(memory);
-  const state = getRetentionState(retention);
+  const retention =
+    typeof memory.matched_retention === "number"
+      ? memory.matched_retention
+      : calculateRetention(memory);
+  const state = memory.matched_memory_state || getRetentionState(retention);
   const stateLabelMap = {
     fresh: "鲜活记忆",
     fuzzy: "模糊记忆",
@@ -2249,8 +2351,8 @@ function createMemoryCard(memory, showActions = true) {
       ? `失效时间：${formatDateTime(memory.expires_at)}`
       : `创建时间：${formatDateTime(memory.created_at)}`;
   const scoreInfo =
-    typeof memory.score === "number"
-      ? `相似度 ${memory.similarity.toFixed(3)} · 综合权重 ${memory.score.toFixed(3)}`
+    typeof memory.matched_score === "number" || typeof memory.score === "number"
+      ? `相似度 ${(memory.matched_similarity ?? memory.similarity).toFixed(3)} · 综合权重 ${(memory.matched_score ?? memory.score).toFixed(3)}`
       : `提取次数 ${memory.retrieval_count || 0} · R=${retention.toFixed(3)}`;
 
   wrapper.innerHTML = `
@@ -2585,8 +2687,12 @@ async function saveApiSettings() {
   appState.api.baseUrl = dom.apiBaseUrl.value.trim();
   appState.api.apiKey = dom.apiKey.value.trim();
   appState.api.model = dom.apiModelName.value.trim();
+  appState.api.memoryBaseUrl = dom.memoryApiBaseUrl.value.trim();
+  appState.api.memoryApiKey = dom.memoryApiKey.value.trim();
+  appState.api.memoryModel = dom.memoryApiModelName.value.trim();
+  appState.api.memoryEmbeddingModel = dom.memoryApiEmbeddingModelName.value.trim();
   appState.api.embeddingModel =
-    appState.api.embeddingModel?.trim() || DEFAULT_EMBEDDING_MODEL;
+    String(appState.api.embeddingModel || "").trim() || DEFAULT_EMBEDDING_MODEL;
   appState.api.temperature = Number(dom.temperatureInput.value || 0.9);
   await writeState();
   closeSheet(dom.apiSheet);
@@ -2766,6 +2872,7 @@ function setupEvents() {
   dom.memoryFormResetBtn.addEventListener("click", resetMemoryForm);
   dom.saveMemoryBtn.addEventListener("click", handleSaveMemory);
   dom.memorySearchBtn.addEventListener("click", handleMemorySearch);
+  dom.manualMemorySummaryBtn.addEventListener("click", handleManualMemorySummary);
   dom.importMemoryBtn.addEventListener("click", () => dom.memoryImportInput.click());
   dom.exportMemoryBtn.addEventListener("click", exportMemories);
   dom.memoryImportInput.addEventListener("change", handleImportMemories);
