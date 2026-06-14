@@ -1669,6 +1669,18 @@ function renderMessages(options = {}) {
   });
 }
 
+function vibrateDevice(duration = 200) {
+  if (typeof navigator?.vibrate === "function") {
+    navigator.vibrate(duration);
+  }
+}
+
+function waitForNextFrame() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(resolve);
+  });
+}
+
 function openSheet(sheet) {
   sheet.classList.add("is-open");
   sheet.setAttribute("aria-hidden", "false");
@@ -1924,8 +1936,34 @@ function findTopLevelJsonKey(source, key, startIndex = 0) {
   let depth = 0;
   let inString = false;
   let escaped = false;
+  const beginIndex = Math.max(0, startIndex);
 
-  for (let index = Math.max(0, startIndex); index < text.length; index += 1) {
+  for (let index = 0; index < beginIndex; index += 1) {
+    const char = text[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth = Math.max(0, depth - 1);
+    }
+  }
+
+  for (let index = beginIndex; index < text.length; index += 1) {
     const char = text[index];
 
     if (inString) {
@@ -2289,6 +2327,7 @@ async function handleSendMessage(event) {
   appState.messages.push(userMessage);
   renderMessages();
   await writeState();
+  vibrateDevice(200);
 
   dom.messageInput.value = "";
   autoGrowTextarea();
@@ -2311,6 +2350,8 @@ async function handleSendMessage(event) {
     assistantMessage.content = result.reply;
     assistantMessage.thinking = result.thinking;
     renderMessages();
+    await waitForNextFrame();
+    vibrateDevice(200);
     await writeState();
     window.setTimeout(() => {
       void maybeRunAutoMemorySummary();
@@ -2809,12 +2850,6 @@ function setupEvents() {
   dom.bulkDeleteBtn.addEventListener("click", deleteSelectedMessages);
   dom.saveMessageEditBtn.addEventListener("click", saveEditedMessage);
   dom.messageInput.addEventListener("input", autoGrowTextarea);
-  dom.messageInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      dom.composerForm.requestSubmit();
-    }
-  });
   dom.avatarInput.addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
