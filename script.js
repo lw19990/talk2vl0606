@@ -967,30 +967,37 @@ async function extractStructuredMemoriesFromMessages(messages) {
   }
 
   const transcript = serializeMessagesForSummary(messages);
+  const partnerName = profile.partnerName?.trim() || "我";
+  const selfName = profile.selfName?.trim() || "她";
+  const partnerPrompt = profile.partnerPrompt?.trim();
+  const selfPrompt = profile.selfPrompt?.trim();
   const systemPrompt = `
-你是一个后台记忆提取引擎。请完整阅读最近 10 轮对话，提取其中真正值得长期保存的用户信息，并输出结构化 JSON。
+你是角色「${partnerName}」自己的后台记忆提取引擎。请完整阅读最近 10 轮对话，从角色本人的第一视角出发，提取其中真正值得保存的记忆，并输出结构化 JSON。
 
 提取目标：
-1. long_term：长期事实、稳定偏好、身份背景、重要经历、长期目标
-2. schedule：带明确时间节点的计划、安排、预约、事件
-3. short_term：近几天内有效的即时细节、短期状态、临时事项
-4. impression：角色对用户形成的主观印象
+1. long_term：关于 ${selfName} 的长期事实、稳定偏好、身份背景、重要经历、长期目标
+2. schedule：关于 ${selfName} 的带明确时间节点的计划、安排、预约、事件
+3. short_term：关于 ${selfName} 的近几天内有效的即时细节、短期状态、临时事项
+4. impression：我对 ${selfName} 形成的主观印象
 
 规则：
 1. 过滤掉无价值闲聊、情绪口头禅、纯陪伴性废话、重复信息。
 2. importance 必须是 1-10 的整数。
 3. impression 类型必须额外提供 impression_section，且只能是 profile / relationship / notes。
 4. schedule 类型若能提取到明确时间，请写入 schedule_at；否则写空字符串。
-5. content 要简洁明确，适合直接存入记忆库。
-6. 不要输出任何解释，不要使用 Markdown。
-7. 如果没有值得提取的信息，返回空数组。
+5. content 必须严格使用角色第一视角来描述，允许用“我”自称；描述 ${selfName} 时，优先使用名字「${selfName}」或对话/设定中出现的自然称呼。
+6. 严禁在 content 中使用“用户”这个词，严禁使用冷淡客观的档案口吻，例如“用户喜欢…”“用户提到…”“用户计划…”。
+7. content 要简洁明确，但必须保留陪伴关系中的主观温度，写出来要像角色自己的记忆摘录，而不是旁观者总结。
+8. 如果是 impression，必须体现“我眼中的 ${selfName}”或“我和 ${selfName} 的关系感受”，不能写成第三方分析。
+9. 不要输出任何解释，不要使用 Markdown。
+10. 如果没有值得提取的信息，返回空数组。
 
 只返回以下 JSON 结构：
 {
   "memories": [
     {
       "room": "long_term",
-      "content": "用户最近在准备职业资格考试",
+      "content": "${selfName}最近一直在准备职业资格考试，我得记住这件事。",
       "importance": 8,
       "impression_section": "",
       "schedule_at": ""
@@ -1001,7 +1008,16 @@ async function extractStructuredMemoriesFromMessages(messages) {
 
   const userPrompt = `
 [角色]
-${profile.partnerName || "与你对话的人"}
+${partnerName}
+
+[角色设定]
+${partnerPrompt || "暂无额外角色设定。"}
+
+[对方名字 / 常用称呼]
+${selfName}
+
+[对方设定]
+${selfPrompt || "暂无额外用户设定。"}
 
 [最近 10 轮对话全文]
 ${transcript || "无"}
