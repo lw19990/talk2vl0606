@@ -65,6 +65,10 @@ const DEFAULT_STATE = {
   session: {
     lastAutoSummaryRound: 0,
   },
+  theme: {
+    backgroundMode: "none",
+    rainBackgroundImage: "",
+  },
   messages: [],
   worldbooks: [],
 };
@@ -89,7 +93,10 @@ const dom = {
   apiSheet: document.getElementById("api-sheet"),
   memorySheet: document.getElementById("memory-sheet"),
   worldbookSheet: document.getElementById("worldbook-sheet"),
+  themeSheet: document.getElementById("theme-sheet"),
   chatSettingsTrigger: document.getElementById("chat-settings-trigger"),
+  chatPanel: document.getElementById("chat-panel"),
+  chatBackgroundPhoto: document.getElementById("chat-background-photo"),
   avatarPreview: document.getElementById("avatar-preview"),
   avatarInput: document.getElementById("avatar-input"),
   partnerName: document.getElementById("partner-name"),
@@ -141,6 +148,14 @@ const dom = {
   messageEditTitle: document.getElementById("message-edit-title"),
   messageEditInput: document.getElementById("message-edit-input"),
   saveMessageEditBtn: document.getElementById("save-message-edit-btn"),
+  themeModeRainBtn: document.getElementById("theme-mode-rain"),
+  themeModeSnowBtn: document.getElementById("theme-mode-snow"),
+  themeDisableBtn: document.getElementById("theme-disable-btn"),
+  themeBgInput: document.getElementById("theme-bg-input"),
+  clearThemeBgBtn: document.getElementById("clear-theme-bg-btn"),
+  themeBgPreview: document.getElementById("theme-bg-preview"),
+  themeBgCaption: document.getElementById("theme-bg-caption"),
+  saveThemeBtn: document.getElementById("save-theme-btn"),
 };
 
 let appState = typeof structuredClone === "function"
@@ -164,6 +179,10 @@ let suppressNextMessageScrollClose = false;
 let messageMenuOpenedAt = 0;
 
 const shaderCanvas = document.getElementById("shader-canvas");
+const RAIN_BACKGROUND_IMAGE =
+  "https://img.cdn1.vip/i/6a2fe492e2e9d_1781523602.webp";
+let shaderRenderer = null;
+let shaderResizeBound = false;
 
 function formatTime(date = new Date()) {
   const year = "2018";
@@ -260,6 +279,10 @@ function normalizeState(raw) {
     session: {
       ...DEFAULT_STATE.session,
       ...(raw?.session || {}),
+    },
+    theme: {
+      ...DEFAULT_STATE.theme,
+      ...(raw?.theme || {}),
     },
     messages: Array.isArray(raw?.messages)
       ? raw.messages.map(normalizeMessageRecord)
@@ -1362,6 +1385,11 @@ function renderToolGrid() {
         await renderMemoryList();
         openSheet(dom.memorySheet);
       });
+    } else if (name === "美化") {
+      button.addEventListener("click", () => {
+        renderThemeForm();
+        openSheet(dom.themeSheet);
+      });
     } else if (name === "世界书") {
       button.addEventListener("click", async () => {
         renderWorldbookList();
@@ -1403,6 +1431,592 @@ function renderApiForm() {
   dom.vectorApiModelName.value = api.vectorModel || DEFAULT_BGE_M3_MODEL;
   dom.temperatureRange.value = String(api.temperature ?? 0.9);
   dom.temperatureInput.value = String(api.temperature ?? 0.9);
+}
+
+function renderThemeForm() {
+  const mode = String(appState.theme?.backgroundMode || "none");
+  dom.themeModeRainBtn?.classList.toggle("active", mode === "rain");
+  dom.themeModeSnowBtn?.classList.toggle("active", mode === "snow");
+  const activeImage = String(appState.theme?.rainBackgroundImage || "").trim() || RAIN_BACKGROUND_IMAGE;
+  if (dom.themeBgPreview) {
+    const escapedUrl = activeImage.replace(/"/g, '\\"');
+    dom.themeBgPreview.style.backgroundImage = `
+      linear-gradient(180deg, rgba(20, 24, 35, 0.12), rgba(14, 16, 23, 0.46)),
+      url("${escapedUrl}")
+    `;
+  }
+  if (dom.themeBgCaption) {
+    dom.themeBgCaption.textContent = appState.theme?.rainBackgroundImage
+      ? "当前使用你上传的背景图。"
+      : "当前使用默认背景图。";
+  }
+}
+
+function createRainShaderRenderer(canvas) {
+  if (!canvas) return null;
+  const gl =
+    canvas.getContext("webgl", {
+      alpha: true,
+      antialias: true,
+      premultipliedAlpha: false,
+    }) ||
+    canvas.getContext("experimental-webgl", {
+      alpha: true,
+      antialias: true,
+      premultipliedAlpha: false,
+    });
+  if (!gl) return null;
+
+  const vertexSource = `
+    attribute vec2 aPosition;
+    varying vec2 vUv;
+    void main() {
+      vUv = aPosition * 0.5 + 0.5;
+      gl_Position = vec4(aPosition, 0.0, 1.0);
+    }
+  `;
+
+  const fragmentSource = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform vec2 uResolution;
+    uniform float uTime;
+    uniform float uRainAmount;
+    uniform sampler2D uBackground;
+    uniform float uHasTexture;
+
+    #define S(a, b, t) smoothstep(a, b, t)
+
+    vec3 N13(float p) {
+      vec3 p3 = fract(vec3(p) * vec3(.1031,.11369,.13787));
+      p3 += dot(p3, p3.yzx + 19.19);
+      return fract(vec3((p3.x + p3.y) * p3.z, (p3.x + p3.z) * p3.y, (p3.y + p3.z) * p3.x));
+    }
+
+    float N(float t) {
+      return fract(sin(t * 12345.564) * 7658.76);
+    }
+
+    float Saw(float b, float t) {
+      return S(0., b, t) * S(1., b, t);
+    }
+
+    float StaticDrops(vec2 uv, float t) {
+      uv *= 40.;
+      vec2 id = floor(uv);
+      uv = fract(uv) - .5;
+      vec3 n = N13(id.x * 107.45 + id.y * 3543.654);
+      vec2 p = (n.xy - .5) * .7;
+      float d = length(uv - p);
+      float fade = Saw(.025, fract(t + n.z));
+      return S(.3, 0., d) * fract(n.z * 10.) * fade;
+    }
+
+    vec2 DropLayer2(vec2 uv, float t) {
+      vec2 UV = uv;
+      uv.y += t * 0.75;
+      vec2 a = vec2(6., 1.);
+      vec2 grid = a * 2.;
+      vec2 id = floor(uv * grid);
+      float colShift = N(id.x);
+      uv.y += colShift;
+      id = floor(uv * grid);
+      vec3 n = N13(id.x * 35.2 + id.y * 2376.1);
+      vec2 st = fract(uv * grid) - vec2(.5, 0.);
+      float x = n.x - .5;
+      float y = UV.y * 20.;
+      float wiggle = sin(y + sin(y));
+      x += wiggle * (.5 - abs(x)) * (n.z - .5);
+      x *= .7;
+      float ti = fract(t + n.z);
+      y = (Saw(.85, ti) - .5) * .9 + .5;
+      vec2 p = vec2(x, y);
+      float d = length((st - p) * a.yx);
+      float mainDrop = S(.4, .0, d);
+      float r = sqrt(S(1., y, st.y));
+      float cd = abs(st.x - x);
+      float trail = S(.23 * r, .15 * r * r, cd);
+      float trailFront = S(-.02, .02, st.y - y);
+      trail *= trailFront * r * r;
+      y = UV.y;
+      float trail2 = S(.2 * r, .0, cd);
+      float droplets = max(0., (sin(y * (1. - y) * 120.) - st.y)) * trail2 * trailFront * n.z;
+      y = fract(y * 10.) + (st.y - .5);
+      float dd = length(st - vec2(x, y));
+      droplets = S(.3, 0., dd);
+      float m = mainDrop + droplets * r * trailFront;
+      return vec2(m, trail);
+    }
+
+    vec2 Drops(vec2 uv, float t, float l0, float l1, float l2) {
+      float s = StaticDrops(uv, t) * l0;
+      vec2 m1 = DropLayer2(uv, t) * l1;
+      vec2 m2 = DropLayer2(uv * 1.85, t) * l2;
+      float c = s + m1.x + m2.x;
+      c = S(.3, 1., c);
+      return vec2(c, max(m1.y * l0, m2.y * l1));
+    }
+
+    vec3 sampleBase(vec2 uv) {
+      if (uHasTexture > 0.5) {
+        return texture2D(uBackground, uv).rgb;
+      }
+      vec3 sky = mix(vec3(0.08, 0.12, 0.2), vec3(0.26, 0.31, 0.42), uv.y);
+      vec3 glow = vec3(0.09, 0.12, 0.16) * (0.5 + 0.5 * sin((uv.x + uv.y) * 8.0 + uTime * 0.25));
+      return sky + glow;
+    }
+
+    void main() {
+      vec2 fragCoord = vUv * uResolution;
+      vec2 uv = (fragCoord - .5 * uResolution) / uResolution.y;
+      vec2 UV = vUv;
+      float t = uTime * .2;
+
+      float rainAmount = clamp(uRainAmount, 0.0, 1.0);
+      float staticDrops = S(-.5, 1., rainAmount) * 2.;
+      float layer1 = S(.25, .75, rainAmount);
+      float layer2 = S(.0, .5, rainAmount);
+
+      vec2 c = Drops(uv, t, staticDrops, layer1, layer2);
+      vec2 e = vec2(.0012, 0.0);
+      float cx = Drops(uv + e, t, staticDrops, layer1, layer2).x;
+      float cy = Drops(uv + e.yx, t, staticDrops, layer1, layer2).x;
+      vec2 n = vec2(cx - c.x, cy - c.x);
+
+      float fog = mix(0.5, 1.0, rainAmount);
+      float blur = mix(0.003, 0.018, fog - c.y * 0.7);
+      vec2 uvDistorted = clamp(UV + n * (0.8 + rainAmount * 0.9), 0.001, 0.999);
+      vec2 blurStep = vec2(blur);
+
+      vec3 col = vec3(0.0);
+      col += sampleBase(clamp(uvDistorted + vec2(-blurStep.x, -blurStep.y), 0.001, 0.999)) * 0.12;
+      col += sampleBase(clamp(uvDistorted + vec2( blurStep.x, -blurStep.y), 0.001, 0.999)) * 0.12;
+      col += sampleBase(clamp(uvDistorted + vec2(-blurStep.x,  blurStep.y), 0.001, 0.999)) * 0.12;
+      col += sampleBase(clamp(uvDistorted + vec2( blurStep.x,  blurStep.y), 0.001, 0.999)) * 0.12;
+      col += sampleBase(clamp(uvDistorted + vec2( blurStep.x, 0.0), 0.001, 0.999)) * 0.13;
+      col += sampleBase(clamp(uvDistorted + vec2(-blurStep.x, 0.0), 0.001, 0.999)) * 0.13;
+      col += sampleBase(clamp(uvDistorted + vec2(0.0,  blurStep.y), 0.001, 0.999)) * 0.13;
+      col += sampleBase(clamp(uvDistorted + vec2(0.0, -blurStep.y), 0.001, 0.999)) * 0.13;
+      col += sampleBase(uvDistorted) * 0.18;
+
+      float streak = smoothstep(0.12, 0.85, c.y) * (0.4 + 0.6 * c.x);
+      vec3 coolFog = vec3(0.86, 0.89, 0.93);
+      col = mix(col, col * 0.90 + coolFog * 0.10, clamp(fog * 0.14 + streak * 0.10, 0.0, 0.35));
+
+      float vignette = 1.0 - dot(UV - 0.5, UV - 0.5) * 0.95;
+      col *= clamp(vignette, 0.35, 1.0);
+
+      float dropletShine = smoothstep(0.35, 1.0, c.x) * 0.09;
+      col += vec3(0.95, 0.97, 1.0) * dropletShine;
+
+      float layerAlpha = (uHasTexture > 0.5) ? 0.8 : 1.0;
+      gl_FragColor = vec4(col, layerAlpha);
+    }
+  `;
+
+  const compileShader = (type, source) => {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(shader);
+      gl.deleteShader(shader);
+      throw new Error(`Shader 编译失败: ${info}`);
+    }
+    return shader;
+  };
+
+  const vertexShader = compileShader(gl.VERTEX_SHADER, vertexSource);
+  const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
+  const program = gl.createProgram();
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error(`Shader 链接失败: ${gl.getProgramInfoLog(program)}`);
+  }
+  gl.useProgram(program);
+
+  const positionBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const positionLocation = gl.getAttribLocation(program, "aPosition");
+  gl.enableVertexAttribArray(positionLocation);
+  gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+  const resolutionLocation = gl.getUniformLocation(program, "uResolution");
+  const timeLocation = gl.getUniformLocation(program, "uTime");
+  const rainAmountLocation = gl.getUniformLocation(program, "uRainAmount");
+  const hasTextureLocation = gl.getUniformLocation(program, "uHasTexture");
+  const backgroundLocation = gl.getUniformLocation(program, "uBackground");
+  gl.uniform1i(backgroundLocation, 0);
+
+  const texture = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    1,
+    1,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    new Uint8Array([20, 28, 42, 255])
+  );
+  gl.clearColor(0, 0, 0, 0);
+
+  let hasTexture = 0;
+  let rafId = 0;
+  let startTime = performance.now();
+  let rainAmount = 0.84;
+
+  const resize = () => {
+    const panel = dom.chatPanel || canvas.parentElement;
+    const rect = panel?.getBoundingClientRect?.();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const width = Math.max(1, Math.floor((rect?.width || window.innerWidth) * dpr));
+    const height = Math.max(1, Math.floor((rect?.height || window.innerHeight) * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  };
+
+  const render = (now) => {
+    const elapsed = (now - startTime) / 1000;
+    resize();
+    gl.useProgram(program);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
+    gl.uniform1f(timeLocation, elapsed);
+    gl.uniform1f(rainAmountLocation, rainAmount);
+    gl.uniform1f(hasTextureLocation, hasTexture);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    rafId = requestAnimationFrame(render);
+  };
+
+  const setImage = (url) => {
+    if (!url) {
+      hasTexture = 0;
+      return;
+    }
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => {
+      try {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+        hasTexture = 1;
+      } catch (error) {
+        console.warn("聊天雨景背景纹理加载失败，将回退到程序纹理背景:", error);
+        hasTexture = 0;
+      }
+    };
+    image.onerror = () => {
+      hasTexture = 0;
+    };
+    image.src = url;
+  };
+
+  return {
+    resize,
+    setImage,
+    setRainAmount(value) {
+      rainAmount = Math.max(0, Math.min(1, Number(value) || 0));
+    },
+    start() {
+      if (rafId) return;
+      startTime = performance.now();
+      rafId = requestAnimationFrame(render);
+    },
+    stop() {
+      if (!rafId) return;
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    },
+  };
+}
+
+function createSnowShaderRenderer(canvas) {
+  if (!canvas) return null;
+  const gl =
+    canvas.getContext("webgl", {
+      alpha: true,
+      antialias: true,
+      premultipliedAlpha: false,
+    }) ||
+    canvas.getContext("experimental-webgl", {
+      alpha: true,
+      antialias: true,
+      premultipliedAlpha: false,
+    });
+  if (!gl) return null;
+
+  const vertexSource = `
+    attribute vec2 aPosition;
+    varying vec2 vUv;
+    void main() {
+      vUv = aPosition * 0.5 + 0.5;
+      gl_Position = vec4(aPosition, 0.0, 1.0);
+    }
+  `;
+
+  const fragmentSource = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform vec2 uResolution;
+    uniform float uTime;
+
+    #define LAYERS 34
+    #define DEPTH .5
+    #define WIDTH .3
+    #define SPEED .6
+
+    void main() {
+      const mat3 p = mat3(
+        13.323122,23.5112,21.71123,
+        21.1212,28.7312,11.9312,
+        21.8112,14.7212,61.3934
+      );
+
+      vec2 uv = vec2(0.0, uResolution.y / uResolution.x) * vUv + vUv;
+      vec3 acc = vec3(0.0);
+      float dof = 1.8 * sin(uTime * .06);
+
+      for (int i = 0; i < LAYERS; i++) {
+        float fi = float(i);
+        vec2 q = uv * (1.0 + fi * DEPTH);
+        q += vec2(
+          q.y * (WIDTH * mod(fi * 7.238917, 1.0) - WIDTH * .5),
+          SPEED * uTime / (1.0 + fi * DEPTH * .03)
+        );
+        vec3 n = vec3(floor(q), 31.189 + fi);
+        vec3 m = floor(n) * .00001 + fract(n);
+        vec3 mp = (31415.9 + m) / fract(p * m);
+        vec3 r = fract(mp);
+        vec2 s = abs(mod(q, 1.0) - .5 + .9 * r.xy - .45);
+        s += .0035 * abs(2.0 * fract(8.0 * q.yx) - 1.0);
+        float d = .6 * max(s.x - s.y, s.x + s.y) + max(s.x, s.y) - .01;
+        float edge = .005 + .05 * min(.5 * abs(fi - 5.0 - dof), 1.0);
+        acc += vec3(smoothstep(edge, -edge, d) * (r.x / (1.0 + .02 * fi * DEPTH)));
+      }
+
+      float mask = clamp(max(max(acc.r, acc.g), acc.b), 0.0, 1.0);
+      float alpha = smoothstep(0.05, 0.34, mask) * 0.82;
+      float sparkle = smoothstep(0.24, 0.9, mask) * 0.12;
+      vec3 snow = vec3(1.0) * (0.96 + sparkle);
+      gl_FragColor = vec4(snow, alpha);
+    }
+  `;
+
+  const compileShader = (type, source) => {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(shader);
+      gl.deleteShader(shader);
+      throw new Error(`Shader 编译失败: ${info}`);
+    }
+    return shader;
+  };
+
+  const vertexShader = compileShader(gl.VERTEX_SHADER, vertexSource);
+  const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
+  const program = gl.createProgram();
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error(`Shader 链接失败: ${gl.getProgramInfoLog(program)}`);
+  }
+  gl.useProgram(program);
+
+  const positionBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const positionLocation = gl.getAttribLocation(program, "aPosition");
+  gl.enableVertexAttribArray(positionLocation);
+  gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+  const resolutionLocation = gl.getUniformLocation(program, "uResolution");
+  const timeLocation = gl.getUniformLocation(program, "uTime");
+
+  let rafId = 0;
+  let startTime = performance.now();
+
+  const resize = () => {
+    const panel = dom.chatPanel || canvas.parentElement;
+    const rect = panel?.getBoundingClientRect?.();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const width = Math.max(1, Math.floor((rect?.width || window.innerWidth) * dpr));
+    const height = Math.max(1, Math.floor((rect?.height || window.innerHeight) * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  };
+
+  const render = (now) => {
+    const elapsed = (now - startTime) / 1000;
+    resize();
+    gl.useProgram(program);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
+    gl.uniform1f(timeLocation, elapsed);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    rafId = requestAnimationFrame(render);
+  };
+
+  gl.clearColor(0, 0, 0, 0);
+
+  return {
+    resize,
+    setImage() {},
+    setRainAmount() {},
+    start() {
+      if (rafId) return;
+      startTime = performance.now();
+      rafId = requestAnimationFrame(render);
+    },
+    stop() {
+      if (!rafId) return;
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    },
+  };
+}
+
+function ensureShaderRenderer(mode) {
+  if (!shaderCanvas) return null;
+  if (shaderRenderer?.mode === mode) return shaderRenderer.instance;
+  shaderRenderer?.instance?.stop?.();
+  try {
+    const instance = mode === "snow" ? createSnowShaderRenderer(shaderCanvas) : createRainShaderRenderer(shaderCanvas);
+    shaderRenderer = { mode, instance };
+  } catch (error) {
+    console.error("聊天背景渲染初始化失败", error);
+    shaderRenderer = null;
+  }
+  if (shaderRenderer?.instance && !shaderResizeBound) {
+    window.addEventListener("resize", () => {
+      shaderRenderer?.instance?.resize?.();
+    });
+    shaderResizeBound = true;
+  }
+  return shaderRenderer?.instance || null;
+}
+
+function getActiveRainBackgroundImage() {
+  return String(appState.theme?.rainBackgroundImage || "").trim() || RAIN_BACKGROUND_IMAGE;
+}
+
+function syncRainBackgroundMedia() {
+  if (!dom.chatBackgroundPhoto) return;
+  const activeImage = getActiveRainBackgroundImage();
+  const escapedUrl = activeImage.replace(/"/g, '\\"');
+  dom.chatBackgroundPhoto.style.backgroundImage = `
+    linear-gradient(180deg, rgba(20, 24, 35, 0.12), rgba(14, 16, 23, 0.46)),
+    url("${escapedUrl}")
+  `;
+  if (String(appState.theme?.backgroundMode || "none") === "rain") {
+    const renderer = ensureShaderRenderer("rain");
+    renderer?.setImage(activeImage);
+  }
+}
+
+function applyChatTheme() {
+  const mode = String(appState.theme?.backgroundMode || "none");
+  dom.chatPanel?.classList.toggle("rain-theme", mode === "rain");
+  dom.chatPanel?.classList.toggle("snow-theme", mode === "snow");
+  if (mode === "none") {
+    shaderRenderer?.instance?.stop?.();
+    return;
+  }
+  syncRainBackgroundMedia();
+  const renderer = ensureShaderRenderer(mode);
+  if (!renderer) return;
+  if (mode === "rain") {
+    renderer.setImage(getActiveRainBackgroundImage());
+    renderer.setRainAmount(0.84);
+  }
+  renderer.resize();
+  renderer.start();
+}
+
+async function saveThemeSettings() {
+  appState.theme = {
+    ...DEFAULT_STATE.theme,
+    ...(appState.theme || {}),
+    backgroundMode: String(appState.theme?.backgroundMode || "none"),
+    rainBackgroundImage: String(appState.theme?.rainBackgroundImage || ""),
+  };
+  renderThemeForm();
+  applyChatTheme();
+  await writeState();
+  showTempStatus(dom.saveThemeBtn, "聊天美化已保存。");
+}
+
+function setThemeBackgroundMode(mode) {
+  const nextMode = ["none", "rain", "snow"].includes(mode) ? mode : "none";
+  appState.theme = {
+    ...DEFAULT_STATE.theme,
+    ...(appState.theme || {}),
+    backgroundMode: nextMode,
+  };
+  renderThemeForm();
+}
+
+async function handleThemeBackgroundUpload(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    appState.theme = {
+      ...DEFAULT_STATE.theme,
+      ...(appState.theme || {}),
+      rainBackgroundImage: String(dataUrl || ""),
+    };
+    renderThemeForm();
+    syncRainBackgroundMedia();
+    if (String(appState.theme?.backgroundMode || "none") !== "none") {
+      applyChatTheme();
+    }
+    await writeState();
+    showTempStatus(dom.saveThemeBtn, "背景图片已更新。");
+  } catch (error) {
+    console.error(error);
+    showTempStatus(dom.saveThemeBtn, "背景图片处理失败。");
+  } finally {
+    if (dom.themeBgInput) {
+      dom.themeBgInput.value = "";
+    }
+  }
+}
+
+async function clearThemeBackgroundImage() {
+  appState.theme = {
+    ...DEFAULT_STATE.theme,
+    ...(appState.theme || {}),
+    rainBackgroundImage: "",
+  };
+  renderThemeForm();
+  syncRainBackgroundMedia();
+  if (String(appState.theme?.backgroundMode || "none") !== "none") {
+    applyChatTheme();
+  }
+  await writeState();
+  showTempStatus(dom.saveThemeBtn, "已恢复默认背景图。");
 }
 
 function updateBulkSelectBar() {
@@ -2977,6 +3591,9 @@ function bindSheetClosers() {
   document.querySelectorAll("[data-close-worldbook]").forEach((element) => {
     element.addEventListener("click", () => closeSheet(dom.worldbookSheet));
   });
+  document.querySelectorAll("[data-close-theme]").forEach((element) => {
+    element.addEventListener("click", () => closeSheet(dom.themeSheet));
+  });
   document.querySelectorAll("[data-close-message-edit]").forEach((element) => {
     element.addEventListener("click", closeMessageEditModal);
   });
@@ -3067,6 +3684,24 @@ function setupEvents() {
   dom.memoryImportInput.addEventListener("change", handleImportMemories);
   dom.worldbookFormResetBtn.addEventListener("click", resetWorldbookForm);
   dom.saveWorldbookBtn.addEventListener("click", saveWorldbook);
+  dom.themeModeRainBtn?.addEventListener("click", () => {
+    setThemeBackgroundMode("rain");
+  });
+  dom.themeModeSnowBtn?.addEventListener("click", () => {
+    setThemeBackgroundMode("snow");
+  });
+  dom.themeDisableBtn?.addEventListener("click", () => {
+    setThemeBackgroundMode("none");
+  });
+  dom.themeBgInput?.addEventListener("change", (event) => {
+    void handleThemeBackgroundUpload(event);
+  });
+  dom.clearThemeBgBtn?.addEventListener("click", () => {
+    void clearThemeBackgroundImage();
+  });
+  dom.saveThemeBtn?.addEventListener("click", () => {
+    void saveThemeSettings();
+  });
 }
 
 async function registerServiceWorker() {
@@ -3096,6 +3731,7 @@ async function initializeApp() {
 
   renderProfile();
   renderApiForm();
+  renderThemeForm();
   renderMessages();
   setupEvents();
   await registerServiceWorker();
@@ -3104,13 +3740,15 @@ async function initializeApp() {
   await renderMemoryList();
   renderWorldbookList();
   autoGrowTextarea();
+  applyChatTheme();
 }
 
 function startShaderBackground() {
   if (!shaderCanvas) {
     return;
   }
-  shaderCanvas.style.display = "none";
+  shaderCanvas.width = 1;
+  shaderCanvas.height = 1;
 }
 
 window.initDB = initDB;

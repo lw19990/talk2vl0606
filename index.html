@@ -21,7 +21,6 @@
   </head>
   <body>
     <div class="app-shell">
-      <canvas id="shader-canvas" aria-hidden="true"></canvas>
 
       <div class="panel-track" id="panel-track" data-view="chat">
         <section class="panel toolbox-panel" id="toolbox-panel" aria-label="工具箱">
@@ -35,9 +34,12 @@
         </section>
 
         <section class="panel chat-panel" id="chat-panel" aria-label="聊天界面">
+          <div class="chat-background-photo" id="chat-background-photo" aria-hidden="true"></div>
+          <div class="chat-background-overlay" aria-hidden="true"></div>
+          <canvas id="shader-canvas" aria-hidden="true"></canvas>
           <header class="top-bar">
             <div class="chat-title-wrap">
-              <p class="chat-kicker">Chat</p>
+              <p class="chat-kicker">Our's Chat</p>
               <h2 id="chat-role-name">与你对话的人</h2>
             </div>
             <button
@@ -455,6 +457,58 @@
         </label>
         <button class="primary-save" id="save-message-edit-btn" type="button">
           保存修改
+        </button>
+      </div>
+    </div>
+
+    <div class="sheet settings-sheet" id="theme-sheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-close-theme></div>
+      <div class="sheet-panel theme-panel">
+        <button class="sheet-close" type="button" data-close-theme>×</button>
+        <p class="sheet-kicker dark-text">Rain Aesthetic</p>
+        <h3 class="memory-title">聊天美化</h3>
+        <p class="memory-hint">
+          为聊天界面切换到雨雾玻璃风格。背景照片会被雨滴停留、汇聚、滑落的折射效果影响。
+        </p>
+
+        <section class="theme-card">
+          <div class="theme-card-stack">
+            <div>
+              <h4>背景特效</h4>
+              <p>雨水背景与下雪背景只能二选一。雪花会作为 shader 叠加层始终绘制在背景图片之上。</p>
+            </div>
+            <div class="theme-mode-row" role="group" aria-label="背景特效模式">
+              <button class="theme-mode-btn" id="theme-mode-rain" type="button" data-theme-mode="rain">
+                雨水背景
+              </button>
+              <button class="theme-mode-btn" id="theme-mode-snow" type="button" data-theme-mode="snow">
+                下雪背景
+              </button>
+            </div>
+            <button class="text-btn theme-disable-btn" id="theme-disable-btn" type="button">
+              关闭特效
+            </button>
+          </div>
+        </section>
+
+        <section class="theme-card">
+          <div class="theme-card-stack">
+            <div>
+              <h4>上传背景图片</h4>
+              <p>可上传自己的背景图。图片会直接作为雨雾玻璃效果的底图，被雨滴折射与雾化影响。</p>
+            </div>
+            <div class="theme-upload-row">
+              <label class="upload-btn" for="theme-bg-input">选择图片</label>
+              <button class="secondary-btn" id="clear-theme-bg-btn" type="button">恢复默认图</button>
+            </div>
+            <input id="theme-bg-input" type="file" accept="image/*" hidden />
+            <div class="theme-bg-preview" id="theme-bg-preview" aria-hidden="true"></div>
+            <p class="theme-bg-caption" id="theme-bg-caption">当前使用默认背景图。</p>
+          </div>
+        </section>
+
+        <button class="primary-save" id="save-theme-btn" type="button">
+          保存美化
         </button>
       </div>
     </div>
