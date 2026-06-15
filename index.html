@@ -201,7 +201,7 @@
         <div class="api-subsection">
           <p class="api-subsection-title">副API设置（仅记忆总结）</p>
           <p class="api-subsection-hint">
-            仅用于后台/手动记忆总结与记忆向量生成，不参与聊天主回复，可配置更便宜的模型。
+            仅用于后台/手动记忆总结，不参与聊天主回复，可配置更便宜的模型。
           </p>
 
           <label class="field dark-field">
@@ -218,10 +218,27 @@
             <span>副总结模型</span>
             <input id="memory-api-model-name" type="text" placeholder="留空则回退主聊天模型" />
           </label>
+        </div>
+
+        <div class="api-subsection">
+          <p class="api-subsection-title">向量模型设置</p>
+          <p class="api-subsection-hint">
+            仅用于记忆向量生成与旧记忆向量重建，可单独配置向量模型 API。
+          </p>
 
           <label class="field dark-field">
-            <span>副 Embedding 模型</span>
-            <input id="memory-api-embedding-model-name" type="text" placeholder="留空则回退主 embedding 模型" />
+            <span>向量 Base URL</span>
+            <input id="vector-api-base-url" type="text" placeholder="留空则回退副API/主API" />
+          </label>
+
+          <label class="field dark-field">
+            <span>向量 API Key</span>
+            <input id="vector-api-key" type="password" placeholder="留空则回退副API/主API Key" />
+          </label>
+
+          <label class="field dark-field">
+            <span>向量模型</span>
+            <input id="vector-api-model-name" type="text" placeholder="默认 BAAI/bge-m3" />
           </label>
         </div>
 

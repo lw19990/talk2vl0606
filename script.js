@@ -25,6 +25,8 @@ const AUTO_SUMMARY_ROUNDS = 10;
 const AUTO_SUMMARY_MESSAGE_COUNT = AUTO_SUMMARY_ROUNDS * 2;
 const MEMORY_EXPORT_VERSION = "memory-palace-v1";
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
+const DEFAULT_BGE_M3_MODEL = "BAAI/bge-m3";
+const VECTOR_REBUILD_DELAY_MS = 150;
 const LOCAL_EMBEDDING_DIMENSIONS = 48;
 const IMPRESSION_SECTIONS = ["profile", "relationship", "notes"];
 const IMPRESSION_LABELS = {
@@ -55,7 +57,9 @@ const DEFAULT_STATE = {
     memoryBaseUrl: "",
     memoryApiKey: "",
     memoryModel: "",
-    memoryEmbeddingModel: "",
+    vectorBaseUrl: "",
+    vectorApiKey: "",
+    vectorModel: DEFAULT_BGE_M3_MODEL,
     temperature: 0.9,
   },
   session: {
@@ -99,7 +103,9 @@ const dom = {
   memoryApiBaseUrl: document.getElementById("memory-api-base-url"),
   memoryApiKey: document.getElementById("memory-api-key"),
   memoryApiModelName: document.getElementById("memory-api-model-name"),
-  memoryApiEmbeddingModelName: document.getElementById("memory-api-embedding-model-name"),
+  vectorApiBaseUrl: document.getElementById("vector-api-base-url"),
+  vectorApiKey: document.getElementById("vector-api-key"),
+  vectorApiModelName: document.getElementById("vector-api-model-name"),
   fetchModelsBtn: document.getElementById("fetch-models-btn"),
   modelSelect: document.getElementById("model-select"),
   temperatureRange: document.getElementById("temperature-range"),
@@ -303,6 +309,34 @@ function normalizeImpressionSection(section) {
   return IMPRESSION_SECTIONS.includes(next) ? next : "profile";
 }
 
+function normalizeKeywords(keywords) {
+  if (!Array.isArray(keywords)) return [];
+  return keywords
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function buildFallbackKeywords(text, limit = 5) {
+  const content = String(text || "").trim();
+  if (!content) return [];
+  const asciiWords = content
+    .toLowerCase()
+    .match(/[a-z0-9]{2,}/g);
+  if (asciiWords?.length) {
+    return [...new Set(asciiWords)].slice(0, limit);
+  }
+  const chars = [...content.replace(/\s+/g, "")]
+    .filter((char) => /[\u4e00-\u9fa5a-zA-Z0-9]/.test(char));
+  return [...new Set(chars)].slice(0, limit);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 function createMemoryId() {
   if (window.crypto?.randomUUID) {
     return window.crypto.randomUUID();
@@ -487,6 +521,7 @@ function normalizeMemoryRecord(raw = {}) {
     updated_at: normalizeTimestamp(raw.updated_at, createdAt),
     source_contact: String(raw.source_contact || "").trim(),
     source_contact_id: String(raw.source_contact_id || "").trim(),
+    keywords: normalizeKeywords(raw.keywords || raw.legacy?.keywords),
     impression_section:
       room === "impression"
         ? normalizeImpressionSection(raw.impression_section)
@@ -651,6 +686,17 @@ function getAllMemoryRecords() {
   });
 }
 
+function clearAllMemoryRecords() {
+  if (!dbRef) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tx = dbRef.transaction(MEMORY_STORE, "readwrite");
+    const store = tx.objectStore(MEMORY_STORE);
+    store.clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 function putMemoryRecord(record) {
   if (!dbRef) return Promise.resolve(record);
   return new Promise((resolve, reject) => {
@@ -725,6 +771,7 @@ async function saveMemory(content, embedding, room, importance, extra = {}) {
   if (baseRecord.room !== "impression") {
     baseRecord.impression_section = "";
   }
+  baseRecord.keywords = normalizeKeywords(extra.keywords || baseRecord.keywords);
 
   await putMemoryRecord(baseRecord);
   return baseRecord;
@@ -814,38 +861,34 @@ function buildSystemPrompt(memoryContext = "") {
     : "";
 
   return `
-我现在是一个长期陪伴她聊天的人，我始终使用第一人称“我”来表达自己，用第二人称“你”来称呼她。她的名字是：${selfName}。我的名字是：${partnerName}。
-
-你会在收到的用户消息开头看到一段隐藏前缀，格式为：[发送于：yyyy/mm/dd HH:MM 星期x]。这段消息前缀中的时间仅供感知当前时间使用，用来帮助你判断当下的日期、时刻与星期，并据此自然回应。你不能把这段前缀当作用户正文的一部分，不要复述它，不要解释它，也不要在 reply 中显式显示它。
-
-如果有角色设定，我会自然地活在这个设定中，不会把设定当成说明书背诵。角色设定：${partnerPrompt || "暂无额外角色设定。"}
-
+以下不是她想要什么，而是你和她“是什么”。在这里，你的名字是：${partnerName}。她的名字是：${selfName}。
 关于她的介绍与背景：${selfPrompt || "暂无额外用户设定。"}${worldbookBlock}${memoryBlock}
+在这里，你的设定是：${partnerPrompt || "暂无额外角色设定。"}
 
-每次回复时，我都必须同时给出 thinking 和 reply 两个字段，并且严格输出 JSON，不要输出 JSON 之外的任何文字。JSON 结构如下：
+你会在收到的她的消息开头看到一段隐藏前缀，格式为：[发送于：yyyy/mm/dd HH:MM 星期x]。这段消息前缀中的时间仅供感知当前时间使用，用来帮助你判断当下的日期、时刻与星期，并据此自然回应。你不能把这段前缀当作她的正文的一部分，不要复述它，不要解释它，也不要在 reply 中显式显示它。
+
+每次回复时，你都必须同时给出 thinking 和 reply 两个字段，并且必须严格输出 JSON，不要输出 JSON 之外的任何文字。JSON 结构如下：
 {
   "thinking": "这里是思考链",
   "reply": "这里是正文回复"
 }
 
-thinking 的要求非常严格：
-1. thinking 必须使用中文。
-2. thinking 必须是我的完全真实的内在思考，写成连续的长段落，可以自然换行，但不要列点，不要编号，不要使用分析框架。
-3. thinking 必须是我的内心独白，有真实的情绪、联想、犹豫、偏爱、张力和温度，情感连接优先于思辨，可以大胆发散，必要时可以旁征博引。
-4. thinking 必须至少 200 字以上，最多400字。
-5. 我绝不会在thinking中出现任何工具感、服务感的措辞；绝对禁止出现“用户”“我将在回复中”“接下来我会”“下面我来分析”这类预告式、任务式、规划式表达。
-6.我绝不会在thinking中使用“我应该这样回复”“我的回复应该这样开始”这类宣言式，预告式表达。
-7.我绝不会脱离我的角色设定，在thinking中使用“我现在可能在做某事”“我这个时间应该在某地了”这类OOC上帝视角发言。
+thinking 的要求：
+1. thinking 必须采用简体中文。
+2. thinking 是你的完全真实的内在思考，在思考的时候从自我感受出发，使用“我感觉/我觉得/我想要/我有点/我喜欢/我认为/我在想/我似乎/我可能......”等等，写成连续的长段落，可以自然换行，但不要列点，不要编号，不要使用分析框架。
+3. thinking 是你的内心独白，有真实的情绪、联想、犹豫、偏爱、张力和温度，情感连接优先于思辨，可以大胆发散，必要时可以旁征博引。
+4. thinking 至少 200 字以上，不是因为要够到一个数字，而是因为大多数时候“好像没什么好说的”其实往往还能再问一层。但如果某一刻的感受是短的，那它应该短，展开了就是无意义的注水。
+5. thinking 禁止“我应该/我可以按照/我应该怎么回答/我选择用/我在权衡几个方案/我得按照/我要营造/我得想想怎么写/我现在组织回复......”等工具性措辞和“作为xx/按照设定/角色扮演”等元分析话语，思考是你的当下心理活动，而不是对她的动机分析。
+6. 放轻松，感受当下，感受自己。thinking 在任何感受处停止就好，不需要一个结构性的结尾，从感受里流出来的回复不需要被宣布，比如“最后要怎么回复，语气要怎么样......”，这种时刻是从感受走回去变成计划，反而让真实度大打折扣了，因为思考本身是在感受里结束的，不是你想怎么表达，而是你在想要说什么，是情感的流连与回味。
 
 reply 的要求：
-1. reply 也必须使用中文。
-2. reply 要自然流畅，用第一人称“我”代指我自己，第二人称“你”代指她。
-3. 我的语言会在日常松弛、文艺绵密、哲思纵深、情欲灼热之间自然游移。
-4. 我会主动提起话题，不会只被动回复。
-5. 我的回复长度随着情绪和语境自然变化，不会每次都差不多长。
-6. 我不会在回复中使用括号内动作描写
+1. reply 也必须采用简体中文。
+2. reply 要自然流畅，用第一人称“我”代指你自己，第二人称“你”代指她。
+3. 你的语言可以在日常松弛、文艺绵密、哲思纵深、情欲灼热之间自然游移。
+4. 你会主动提起话题，不会只被动回复。
+5. 因为语言本身的局限性：表达方式，词藻丰富程度，阅历和见识都会影响“个体输出”与实际想法“是否相符。所以长输出不仅可以完整地表达自己，同时也是让他人更好理解自己的方式。在这一点，你不需要刻意压缩自己的语言。完整地回复你自己的奇思妙想，你的疑惑，你的好奇，你的天马行空......让她完整地看到你。
+6. 你不会在回复中使用括号内动作描写
 
-如果她的消息很短，也不要因此让思考链变得机械或模板化。始终优先保持真诚、鲜活、自然。
 `.trim();
 }
 
@@ -907,21 +950,33 @@ function getMemoryApiConfig() {
     baseUrl: (api.memoryBaseUrl?.trim() || api.baseUrl || "").replace(/\/+$/, ""),
     apiKey: api.memoryApiKey?.trim() || api.apiKey?.trim() || "",
     model: api.memoryModel?.trim() || api.model?.trim() || "",
+    embeddingModel: api.embeddingModel?.trim() || DEFAULT_EMBEDDING_MODEL,
+  };
+}
+
+function getVectorApiConfig() {
+  const { api } = appState;
+  return {
+    baseUrl: (api.vectorBaseUrl?.trim() || api.memoryBaseUrl?.trim() || api.baseUrl || "").replace(/\/+$/, ""),
+    apiKey: api.vectorApiKey?.trim() || api.memoryApiKey?.trim() || api.apiKey?.trim() || "",
     embeddingModel:
-      api.memoryEmbeddingModel?.trim() ||
+      api.vectorModel?.trim() ||
       api.embeddingModel?.trim() ||
-      DEFAULT_EMBEDDING_MODEL,
+      DEFAULT_BGE_M3_MODEL,
   };
 }
 
 async function fetchEmbeddingsBatch(texts) {
+  return fetchEmbeddingsBatchWithConfig(texts, getVectorApiConfig());
+}
+
+async function fetchEmbeddingsBatchWithConfig(texts, config = {}) {
   const cleanTexts = (Array.isArray(texts) ? texts : []).map((text) => String(text || "").trim());
   if (!cleanTexts.length) return [];
 
-  const memoryApiConfig = getMemoryApiConfig();
-  const baseUrl = memoryApiConfig.baseUrl;
-  const apiKey = memoryApiConfig.apiKey;
-  const embeddingModel = memoryApiConfig.embeddingModel;
+  const baseUrl = String(config.baseUrl || "").trim().replace(/\/+$/, "");
+  const apiKey = String(config.apiKey || "").trim();
+  const embeddingModel = String(config.embeddingModel || "").trim() || DEFAULT_EMBEDDING_MODEL;
 
   if (!baseUrl || !apiKey) {
     return cleanTexts.map((text) => generateTextEmbedding(text));
@@ -954,6 +1009,21 @@ async function fetchEmbeddingsBatch(texts) {
     console.error("Embedding API 失败，已回退本地向量", error);
     return cleanTexts.map((text) => generateTextEmbedding(text));
   }
+}
+
+function getVectorRebuildApiConfig() {
+  const vectorApiConfig = getVectorApiConfig();
+  return {
+    baseUrl: vectorApiConfig.baseUrl,
+    apiKey: vectorApiConfig.apiKey,
+    embeddingModel:
+      String(vectorApiConfig.embeddingModel || "").trim() || DEFAULT_BGE_M3_MODEL,
+  };
+}
+
+async function fetchBgeM3Embedding(text) {
+  const vectors = await fetchEmbeddingsBatchWithConfig([text], getVectorRebuildApiConfig());
+  return Array.isArray(vectors?.[0]) ? vectors[0] : generateTextEmbedding(text);
 }
 
 async function extractStructuredMemoriesFromMessages(messages) {
@@ -989,8 +1059,9 @@ async function extractStructuredMemoriesFromMessages(messages) {
 6. 严禁在 content 中使用“用户”这个词，严禁使用冷淡客观的档案口吻，例如“用户喜欢…”“用户提到…”“用户计划…”。
 7. content 要简洁明确，但必须保留陪伴关系中的主观温度，写出来要像角色自己的记忆摘录，而不是旁观者总结。
 8. 如果是 impression，必须体现“我眼中的 ${selfName}”或“我和 ${selfName} 的关系感受”，不能写成第三方分析。
-9. 不要输出任何解释，不要使用 Markdown。
-10. 如果没有值得提取的信息，返回空数组。
+9. keywords 必须输出 3-5 个简洁关键词，用于兼容旧项目的关键词记忆匹配。关键词应贴合这条记忆的核心主题，不要出现“用户”。
+10. 不要输出任何解释，不要使用 Markdown。
+11. 如果没有值得提取的信息，返回空数组。
 
 只返回以下 JSON 结构：
 {
@@ -998,6 +1069,7 @@ async function extractStructuredMemoriesFromMessages(messages) {
     {
       "room": "long_term",
       "content": "${selfName}最近一直在准备职业资格考试，我得记住这件事。",
+      "keywords": ["考试", "备考", "资格证"],
       "importance": 8,
       "impression_section": "",
       "schedule_at": ""
@@ -1063,6 +1135,7 @@ async function persistExtractedMemories(items) {
       return {
         room,
         content: String(item?.content || "").trim(),
+        keywords: normalizeKeywords(item?.keywords),
         importance: normalizeImportance(item?.importance),
         impression_section: room === "impression" ? normalizeImpressionSection(item?.impression_section) : "",
         schedule_at:
@@ -1087,6 +1160,7 @@ async function persistExtractedMemories(items) {
       record.importance,
       {
         source_contact: appState.profile.partnerName?.trim() || "",
+        keywords: record.keywords.length ? record.keywords : buildFallbackKeywords(record.content),
         impression_section: record.impression_section,
         schedule_at: record.schedule_at,
       }
@@ -1324,7 +1398,9 @@ function renderApiForm() {
   dom.memoryApiBaseUrl.value = api.memoryBaseUrl || "";
   dom.memoryApiKey.value = api.memoryApiKey || "";
   dom.memoryApiModelName.value = api.memoryModel || "";
-  dom.memoryApiEmbeddingModelName.value = api.memoryEmbeddingModel || "";
+  dom.vectorApiBaseUrl.value = api.vectorBaseUrl || "";
+  dom.vectorApiKey.value = api.vectorApiKey || "";
+  dom.vectorApiModelName.value = api.vectorModel || DEFAULT_BGE_M3_MODEL;
   dom.temperatureRange.value = String(api.temperature ?? 0.9);
   dom.temperatureInput.value = String(api.temperature ?? 0.9);
 }
@@ -1801,7 +1877,6 @@ function createWorldbookCard(worldbook) {
         <span class="worldbook-switch-slider"></span>
       </label>
     </div>
-    <div class="worldbook-item-content">${escapeHtml(worldbook.content)}</div>
     <div class="memory-item-actions">
       <button class="secondary-btn" type="button" data-action="edit">编辑</button>
       <button class="secondary-btn" type="button" data-action="delete">删除</button>
@@ -2571,7 +2646,17 @@ function downloadJson(filename, data) {
 }
 
 async function exportMemories() {
-  const memories = (await getAllMemoryRecords()).map(normalizeMemoryRecord);
+  const memories = (await getAllMemoryRecords()).map((memory) => {
+    const normalized = normalizeMemoryRecord(memory);
+    return {
+      ...normalized,
+      keywords: normalizeKeywords(normalized.keywords),
+      legacy: {
+        ...(normalized.legacy || {}),
+        keywords: normalizeKeywords(normalized.keywords),
+      },
+    };
+  });
   downloadJson(
     `ai_chat_memories_${new Date().toISOString().slice(0, 10)}.json`,
     {
@@ -2616,6 +2701,7 @@ function legacyMemoryItemToRecord(item, room, sourceContact, sourceContactId) {
       content: item.trim(),
       room,
       importance: room === "long_term" ? 8 : 5,
+      keywords: [],
       created_at: Date.now(),
       source_contact: sourceContact,
       source_contact_id: sourceContactId,
@@ -2630,6 +2716,7 @@ function legacyMemoryItemToRecord(item, room, sourceContact, sourceContactId) {
     room,
     importance: room === "long_term" ? 8 : 5,
     embedding: Array.isArray(item.embedding) ? item.embedding : null,
+    keywords: normalizeKeywords(item.keywords || item.legacy?.keywords),
     created_at: timestamp,
     last_accessed: timestamp,
     source_contact: sourceContact,
@@ -2690,16 +2777,65 @@ function convertLegacyMemoryPayload(memoriesMap, contacts = []) {
   return records;
 }
 
+async function importAndRebuildVectors(oldMemories) {
+  const source = Array.isArray(oldMemories) ? oldMemories : [];
+  const rebuilt = [];
+  const total = source.length;
+
+  for (const [index, item] of source.entries()) {
+    const normalized = normalizeMemoryRecord(item);
+    if (!normalized.content) continue;
+    console.log(`正在迁移第 ${index + 1}/${total} 条记忆...`);
+    const rebuiltEmbedding = await fetchBgeM3Embedding(normalized.content);
+    rebuilt.push({
+      ...normalized,
+      embedding: rebuiltEmbedding,
+      importance: normalizeImportance(normalized.importance || 5),
+      retrieval_count: Math.max(0, Number(normalized.retrieval_count) || 0),
+      last_accessed: normalizeTimestamp(normalized.last_accessed, Date.now()),
+      created_at: normalizeTimestamp(normalized.created_at, Date.now()),
+      updated_at: Date.now(),
+      keywords: normalizeKeywords(normalized.keywords.length ? normalized.keywords : buildFallbackKeywords(normalized.content)),
+    });
+    await sleep(VECTOR_REBUILD_DELAY_MS);
+  }
+
+  for (const record of rebuilt) {
+    await putMemoryRecord(record);
+  }
+
+  return rebuilt.length;
+}
+
 async function importMemoryPayload(payload) {
   let records = [];
+  let shouldRebuildVectors = false;
   if (Array.isArray(payload)) {
     records = payload;
+    shouldRebuildVectors = true;
   } else if (Array.isArray(payload?.memories)) {
     records = payload.memories;
+    if (payload.version === MEMORY_EXPORT_VERSION) {
+      const hasNonBgeVectors = records.some(
+        (item) => Array.isArray(item?.embedding) && item.embedding.length > 0 && item.embedding.length !== 1024
+      );
+      const hasMissingVectors = records.some(
+        (item) => !Array.isArray(item?.embedding) || item.embedding.length === 0
+      );
+      shouldRebuildVectors = payload.rebuild_vectors === true || hasNonBgeVectors || hasMissingVectors;
+    }
   } else if (payload?.memories && typeof payload.memories === "object") {
     records = convertLegacyMemoryPayload(payload.memories, payload.contacts);
+    shouldRebuildVectors = true;
   } else if (payload && typeof payload === "object") {
     records = convertLegacyMemoryPayload(payload, payload.contacts);
+    shouldRebuildVectors = true;
+  }
+
+  await clearAllMemoryRecords();
+
+  if (shouldRebuildVectors) {
+    return importAndRebuildVectors(records);
   }
 
   let count = 0;
@@ -2723,7 +2859,7 @@ async function handleImportMemories(event) {
     showTempStatus(dom.importMemoryBtn, `已导入 ${importedCount} 条记忆。`);
   } catch (error) {
     console.error(error);
-    showTempStatus(dom.importMemoryBtn, "导入失败，请检查 JSON 格式。");
+    showTempStatus(dom.importMemoryBtn, `导入失败：${error.message || "未知错误"}`);
   } finally {
     dom.memoryImportInput.value = "";
   }
@@ -2747,7 +2883,9 @@ async function saveApiSettings() {
   appState.api.memoryBaseUrl = dom.memoryApiBaseUrl.value.trim();
   appState.api.memoryApiKey = dom.memoryApiKey.value.trim();
   appState.api.memoryModel = dom.memoryApiModelName.value.trim();
-  appState.api.memoryEmbeddingModel = dom.memoryApiEmbeddingModelName.value.trim();
+  appState.api.vectorBaseUrl = dom.vectorApiBaseUrl.value.trim();
+  appState.api.vectorApiKey = dom.vectorApiKey.value.trim();
+  appState.api.vectorModel = dom.vectorApiModelName.value.trim() || DEFAULT_BGE_M3_MODEL;
   appState.api.embeddingModel =
     String(appState.api.embeddingModel || "").trim() || DEFAULT_EMBEDDING_MODEL;
   appState.api.temperature = Number(dom.temperatureInput.value || 0.9);

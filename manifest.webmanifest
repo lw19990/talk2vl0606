@@ -1,6 +1,6 @@
 {
-  "name": "AI 聊天器",
-  "short_name": "AI聊天器",
+  "name": "我们的",
+  "short_name": "我们的",
   "description": "可安装到桌面的 AI 聊天网页应用，支持角色聊天、API 配置与本地记忆保存。",
   "id": "./",
   "start_url": "./",
