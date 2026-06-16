@@ -441,6 +441,56 @@
       </div>
     </div>
 
+    <div class="sheet settings-sheet" id="background-message-sheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-close-background-message></div>
+      <div class="sheet-panel background-message-panel">
+        <button class="sheet-close" type="button" data-close-background-message>×</button>
+        <p class="sheet-kicker dark-text">Background Message</p>
+        <h3 class="memory-title">后台消息</h3>
+        <p class="memory-hint">
+          开启后会在你设置的分钟区间内随机抽取一个整数，并在倒计时结束后主动调用一次聊天 API，让 AI 自然地发送一条新消息。页面处于前台或后台时都可触发。
+        </p>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h4>发送间隔</h4>
+          </div>
+
+          <label class="inline-check">
+            <input id="background-message-enabled" type="checkbox" />
+            <span>开启后台消息</span>
+          </label>
+
+          <label class="field">
+            <span>设置消息发送间隔为</span>
+            <div class="interval-range-row">
+              <input id="background-message-min" type="number" min="1" max="1440" step="1" placeholder="10" />
+              <span class="interval-range-sep">到</span>
+              <input id="background-message-max" type="number" min="1" max="1440" step="1" placeholder="20" />
+              <span class="interval-range-unit">分钟</span>
+            </div>
+          </label>
+
+          <div class="background-message-status-box" id="background-message-status">
+            当前未开启后台消息。
+          </div>
+
+          <div class="background-message-actions">
+            <button class="secondary-btn" id="request-notification-permission-btn" type="button">
+              获取浏览器通知权限
+            </button>
+            <button class="secondary-btn" id="test-background-notification-btn" type="button">
+              测试通知发送状态
+            </button>
+          </div>
+
+          <button class="primary-save" id="save-background-message-btn" type="button">
+            保存设置
+          </button>
+        </section>
+      </div>
+    </div>
+
     <div class="sheet settings-sheet" id="message-edit-sheet" aria-hidden="true">
       <div class="sheet-backdrop" data-close-message-edit></div>
       <div class="sheet-panel profile-panel">

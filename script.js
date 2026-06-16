@@ -1,6 +1,8 @@
 const SVG_MAP = {
   设置:
     '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>',
+  后台消息:
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h.01"/><path d="M12 10h.01"/><path d="M16 10h.01"/></svg>',
   记忆:
     '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 12a1 1 0 1 1 0 9H9.006a7 7 0 1 1 6.702-9z"/><path d="M21.832 9A3 3 0 0 0 19 7h-2.207a5.5 5.5 0 0 0-10.72.61"/></svg>',
   美化:
@@ -13,7 +15,7 @@ const SVG_MAP = {
     '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><path d="M8.62 9.8A2.25 2.25 0 1 1 12 6.836a2.25 2.25 0 1 1 3.38 2.966l-2.626 2.856a.998.998 0 0 1-1.507 0z"/></svg>',
 };
 
-const TOOL_ITEMS = ["设置", "记忆", "美化", "世界书", "写作", "日记"];
+const TOOL_ITEMS = ["设置", "后台消息", "记忆", "美化", "世界书", "写作", "日记"];
 const DB_NAME = "ai-chat-rain-glass";
 const DB_VERSION = 2;
 const APP_STATE_STORE = "appState";
@@ -69,6 +71,13 @@ const DEFAULT_STATE = {
     backgroundMode: "none",
     rainBackgroundImage: "",
   },
+  backgroundMessage: {
+    enabled: false,
+    minMinutes: 10,
+    maxMinutes: 20,
+    nextFireAt: 0,
+    lastDelayMinutes: 0,
+  },
   messages: [],
   worldbooks: [],
 };
@@ -94,6 +103,7 @@ const dom = {
   memorySheet: document.getElementById("memory-sheet"),
   worldbookSheet: document.getElementById("worldbook-sheet"),
   themeSheet: document.getElementById("theme-sheet"),
+  backgroundMessageSheet: document.getElementById("background-message-sheet"),
   chatSettingsTrigger: document.getElementById("chat-settings-trigger"),
   chatPanel: document.getElementById("chat-panel"),
   chatBackgroundPhoto: document.getElementById("chat-background-photo"),
@@ -156,6 +166,13 @@ const dom = {
   themeBgPreview: document.getElementById("theme-bg-preview"),
   themeBgCaption: document.getElementById("theme-bg-caption"),
   saveThemeBtn: document.getElementById("save-theme-btn"),
+  backgroundMessageEnabled: document.getElementById("background-message-enabled"),
+  backgroundMessageMin: document.getElementById("background-message-min"),
+  backgroundMessageMax: document.getElementById("background-message-max"),
+  backgroundMessageStatus: document.getElementById("background-message-status"),
+  requestNotificationPermissionBtn: document.getElementById("request-notification-permission-btn"),
+  testBackgroundNotificationBtn: document.getElementById("test-background-notification-btn"),
+  saveBackgroundMessageBtn: document.getElementById("save-background-message-btn"),
 };
 
 let appState = typeof structuredClone === "function"
@@ -177,6 +194,10 @@ let editingMessageId = "";
 let longPressState = null;
 let suppressNextMessageScrollClose = false;
 let messageMenuOpenedAt = 0;
+let backgroundMessageTimerId = 0;
+let backgroundMessageTriggerRunning = false;
+let backgroundMessagePendingAfterBusy = false;
+let replyRequestInFlight = false;
 
 const shaderCanvas = document.getElementById("shader-canvas");
 const RAIN_BACKGROUND_IMAGE =
@@ -284,12 +305,38 @@ function normalizeState(raw) {
       ...DEFAULT_STATE.theme,
       ...(raw?.theme || {}),
     },
+    backgroundMessage: normalizeBackgroundMessageConfig(raw?.backgroundMessage || {}),
     messages: Array.isArray(raw?.messages)
       ? raw.messages.map(normalizeMessageRecord)
       : [],
     worldbooks: Array.isArray(raw?.worldbooks)
       ? raw.worldbooks.map(normalizeWorldbookRecord).filter((item) => item.content)
       : [],
+  };
+}
+
+function normalizeMinuteValue(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(1440, Math.round(parsed)));
+}
+
+function normalizeBackgroundMessageConfig(raw = {}) {
+  const minMinutes = normalizeMinuteValue(raw?.minMinutes, DEFAULT_STATE.backgroundMessage.minMinutes);
+  const maxMinutes = normalizeMinuteValue(raw?.maxMinutes, DEFAULT_STATE.backgroundMessage.maxMinutes);
+  const normalizedMin = Math.min(minMinutes, maxMinutes);
+  const normalizedMax = Math.max(minMinutes, maxMinutes);
+  const nextFireAt = normalizeTimestamp(raw?.nextFireAt, 0);
+  const lastDelayMinutes = normalizeMinuteValue(
+    raw?.lastDelayMinutes,
+    DEFAULT_STATE.backgroundMessage.lastDelayMinutes || normalizedMin
+  );
+  return {
+    enabled: Boolean(raw?.enabled),
+    minMinutes: normalizedMin,
+    maxMinutes: normalizedMax,
+    nextFireAt: raw?.nextFireAt ? nextFireAt : 0,
+    lastDelayMinutes,
   };
 }
 
@@ -646,6 +693,269 @@ function showChatStatus(message, timeout = 2600) {
   }
 }
 
+function randomIntInclusive(min, max) {
+  const safeMin = Math.min(min, max);
+  const safeMax = Math.max(min, max);
+  return Math.floor(Math.random() * (safeMax - safeMin + 1)) + safeMin;
+}
+
+function formatRemainingDuration(targetTs) {
+  const diff = Math.max(0, Number(targetTs || 0) - Date.now());
+  const totalMinutes = Math.ceil(diff / 60000);
+  if (totalMinutes <= 0) return "小于 1 分钟";
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (!hours) return `${minutes} 分钟`;
+  if (!minutes) return `${hours} 小时`;
+  return `${hours} 小时 ${minutes} 分钟`;
+}
+
+function getNotificationPermissionLabel() {
+  if (!("Notification" in window)) {
+    return "当前浏览器不支持通知";
+  }
+  const state = Notification.permission || "default";
+  if (state === "granted") return "通知权限：已允许";
+  if (state === "denied") return "通知权限：已拒绝";
+  return "通知权限：未获取";
+}
+
+function getBackgroundMessagePrompt() {
+  const roleName = appState.profile?.partnerName?.trim() || "我";
+  return `[系统触发：后台消息]\n现在没有收到新的用户消息。请你以「${roleName}」的身份，根据当前时间、既有对话、记忆和世界书设定，自然地主动发来一条新的消息。你可以主动关心她现在在做什么、怎么突然安静下来了，也可以自然聊聊你此刻身处哪里、正在做什么、忽然想到了什么。语气要像真实主动发来的消息，不要提到这是后台触发，不要提到系统提示，不要提到时间间隔、分钟数、时长统计，也不要使用“你距离上次回复过了xx分钟”这类精确术语。`;
+}
+
+function renderBackgroundMessageForm() {
+  const config = normalizeBackgroundMessageConfig(appState.backgroundMessage);
+  appState.backgroundMessage = config;
+  if (dom.backgroundMessageEnabled) {
+    dom.backgroundMessageEnabled.checked = config.enabled;
+  }
+  if (dom.backgroundMessageMin) {
+    dom.backgroundMessageMin.value = String(config.minMinutes);
+  }
+  if (dom.backgroundMessageMax) {
+    dom.backgroundMessageMax.value = String(config.maxMinutes);
+  }
+  updateBackgroundMessageStatus();
+}
+
+function updateBackgroundMessageStatus(message = "") {
+  if (!dom.backgroundMessageStatus) return;
+  if (message) {
+    dom.backgroundMessageStatus.textContent = message;
+    return;
+  }
+  const config = normalizeBackgroundMessageConfig(appState.backgroundMessage);
+  if (!config.enabled) {
+    dom.backgroundMessageStatus.textContent = `当前未开启后台消息。\n${getNotificationPermissionLabel()}`;
+    return;
+  }
+  const nextLabel = config.nextFireAt
+    ? `${formatDateTime(config.nextFireAt)}（约剩余 ${formatRemainingDuration(config.nextFireAt)}）`
+    : "等待生成下一次时间";
+  const delayLabel = config.lastDelayMinutes
+    ? `最近一次抽中的间隔：${config.lastDelayMinutes} 分钟`
+    : "尚未抽取间隔";
+  dom.backgroundMessageStatus.textContent =
+    `已开启。\n发送区间：${config.minMinutes} 到 ${config.maxMinutes} 分钟\n${delayLabel}\n下一次触发：${nextLabel}\n${getNotificationPermissionLabel()}`;
+}
+
+async function showBrowserNotification(title, body, options = {}) {
+  if (!("Notification" in window)) {
+    throw new Error("当前浏览器不支持通知。");
+  }
+  if (Notification.permission !== "granted") {
+    throw new Error("通知权限尚未允许。");
+  }
+
+  const normalizedTitle = String(title || appState.profile?.partnerName || "聊天器");
+  const normalizedBody = String(body || "").trim() || "你收到了一条新消息。";
+  const registration = await navigator.serviceWorker?.getRegistration?.();
+  const notificationOptions = {
+    body: normalizedBody,
+    icon: "./icon.png",
+    badge: "./icon.png",
+    tag: options.tag || "talk2vl-background-message",
+    renotify: options.renotify ?? true,
+    data: {
+      url: "./",
+      timestamp: Date.now(),
+      ...(options.data || {}),
+    },
+  };
+
+  if (registration?.showNotification) {
+    await registration.showNotification(normalizedTitle, notificationOptions);
+    return;
+  }
+
+  new Notification(normalizedTitle, notificationOptions);
+}
+
+async function requestBrowserNotificationPermission() {
+  if (!("Notification" in window)) {
+    updateBackgroundMessageStatus("当前浏览器不支持通知，无法发送手机消息提醒。");
+    return;
+  }
+  const permission = await Notification.requestPermission();
+  updateBackgroundMessageStatus();
+  if (permission === "granted") {
+    showChatStatus("浏览器通知权限已允许。", 3200);
+  } else if (permission === "denied") {
+    showChatStatus("浏览器通知权限已被拒绝。", 3200);
+  } else {
+    showChatStatus("你还没有授予通知权限。", 3200);
+  }
+}
+
+async function testBackgroundNotification() {
+  try {
+    await showBrowserNotification(
+      appState.profile?.partnerName?.trim() || "聊天器",
+      "这是一条测试通知。以后后台消息触发后，会像这样把新内容推送到你的手机通知栏。",
+      {
+        tag: "talk2vl-test-notification",
+        renotify: true,
+        data: { type: "background-message-test" },
+      }
+    );
+    updateBackgroundMessageStatus("测试通知已发送，请查看浏览器或手机通知栏。");
+    showChatStatus("测试通知已发送。", 3200);
+  } catch (error) {
+    console.error("测试通知发送失败", error);
+    updateBackgroundMessageStatus(`测试通知发送失败：${error.message || "未知错误"}`);
+    showChatStatus("测试通知发送失败。", 3200);
+  } finally {
+    renderBackgroundMessageForm();
+  }
+}
+
+async function planNextBackgroundMessageRun(persist = true) {
+  const config = normalizeBackgroundMessageConfig(appState.backgroundMessage);
+  if (!config.enabled) {
+    appState.backgroundMessage = config;
+    if (persist) {
+      await writeState();
+    }
+    updateBackgroundMessageStatus();
+    return;
+  }
+  const pickedMinutes = randomIntInclusive(config.minMinutes, config.maxMinutes);
+  config.lastDelayMinutes = pickedMinutes;
+  config.nextFireAt = Date.now() + pickedMinutes * 60 * 1000;
+  appState.backgroundMessage = config;
+  if (persist) {
+    await writeState();
+  }
+  updateBackgroundMessageStatus();
+}
+
+function clearBackgroundMessageTimer() {
+  if (backgroundMessageTimerId) {
+    window.clearTimeout(backgroundMessageTimerId);
+    backgroundMessageTimerId = 0;
+  }
+}
+
+async function scheduleBackgroundMessageTimer() {
+  clearBackgroundMessageTimer();
+  const config = normalizeBackgroundMessageConfig(appState.backgroundMessage);
+  appState.backgroundMessage = config;
+  updateBackgroundMessageStatus();
+  if (!config.enabled) {
+    return;
+  }
+  if (!config.nextFireAt || config.nextFireAt <= Date.now()) {
+    await triggerBackgroundMessage();
+    return;
+  }
+  const delay = Math.max(0, config.nextFireAt - Date.now());
+  backgroundMessageTimerId = window.setTimeout(() => {
+    void triggerBackgroundMessage();
+  }, delay);
+}
+
+async function triggerBackgroundMessage() {
+  clearBackgroundMessageTimer();
+  const config = normalizeBackgroundMessageConfig(appState.backgroundMessage);
+  appState.backgroundMessage = config;
+  if (!config.enabled) {
+    updateBackgroundMessageStatus();
+    return;
+  }
+  if (backgroundMessageTriggerRunning) {
+    return;
+  }
+  if (replyRequestInFlight) {
+    backgroundMessagePendingAfterBusy = true;
+    updateBackgroundMessageStatus("后台消息等待中：当前已有一条消息正在发送/生成，结束后会自动补发。");
+    return;
+  }
+
+  backgroundMessageTriggerRunning = true;
+  backgroundMessagePendingAfterBusy = false;
+  updateBackgroundMessageStatus("后台消息触发中：正在请求 AI 主动发送新消息...");
+
+  const assistantMessage = createMessage("assistant", "", "");
+  appState.messages.push(assistantMessage);
+  renderMessages();
+  setSending(true);
+  replyRequestInFlight = true;
+
+  try {
+    const syntheticPrompt = getBackgroundMessagePrompt();
+    const historyForRequest = appState.messages
+      .slice(0, -1)
+      .concat([createMessage("user", syntheticPrompt, "")]);
+    const result = await requestAssistantReply(syntheticPrompt, historyForRequest, {
+      onProgress: (partial) => {
+        updateStreamingAssistantMessage(
+          assistantMessage,
+          partial.thinking,
+          partial.reply
+        );
+      },
+    });
+    assistantMessage.content = result.reply;
+    assistantMessage.thinking = result.thinking;
+    renderMessages();
+    await writeState();
+    try {
+      await showBrowserNotification(
+        appState.profile?.partnerName?.trim() || "后台消息",
+        result.reply,
+        {
+          tag: `talk2vl-background-message-${assistantMessage.id}`,
+          renotify: true,
+          data: { type: "background-message", messageId: assistantMessage.id },
+        }
+      );
+    } catch (notificationError) {
+      console.error("后台消息通知发送失败", notificationError);
+    }
+    window.setTimeout(() => {
+      void maybeRunAutoMemorySummary();
+    }, 0);
+    await planNextBackgroundMessageRun(true);
+    showChatStatus("后台消息已自动发送。", 3200);
+  } catch (error) {
+    console.error("后台消息触发失败", error);
+    assistantMessage.content = `请求失败：${error.message || "未知错误"}`;
+    assistantMessage.thinking = "这次后台消息未能成功返回思考链内容。";
+    renderMessages();
+    await writeState();
+    await planNextBackgroundMessageRun(true);
+    showChatStatus("后台消息触发失败，已自动安排下一次重试。", 3600);
+  } finally {
+    backgroundMessageTriggerRunning = false;
+    replyRequestInFlight = false;
+    setSending(false);
+    updateBackgroundMessageStatus();
+    await scheduleBackgroundMessageTimer();
+  }
+}
+
 function initDB() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -895,6 +1205,7 @@ function buildSystemPrompt(memoryContext = "") {
   "thinking": "这里是思考链",
   "reply": "这里是正文回复"
 }
+注意：thinking 和 reply 的值必须是合法 JSON 字符串。内容里如果出现英文双引号 "、反斜杠 \\ 或换行，必须按 JSON 规则转义成 \\\"、\\\\ 和 \\n；不要输出未转义的裸换行或裸英文双引号。
 
 thinking 的要求：
 1. thinking 必须采用简体中文。
@@ -1380,6 +1691,11 @@ function renderToolGrid() {
     `;
     if (name === "设置") {
       button.addEventListener("click", () => openSheet(dom.apiSheet));
+    } else if (name === "后台消息") {
+      button.addEventListener("click", () => {
+        renderBackgroundMessageForm();
+        openSheet(dom.backgroundMessageSheet);
+      });
     } else if (name === "记忆") {
       button.addEventListener("click", async () => {
         await renderMemoryList();
@@ -2155,6 +2471,7 @@ function findPreviousUserMessage(historyMessages) {
 }
 
 async function retryAssistantMessage(messageId) {
+  if (replyRequestInFlight) return;
   const messageIndex = findMessageIndexById(messageId);
   if (messageIndex < 0) return;
   const targetMessage = appState.messages[messageIndex];
@@ -2173,6 +2490,7 @@ async function retryAssistantMessage(messageId) {
   renderMessages({ preserveScroll: true });
   await writeState();
   setSending(true);
+  replyRequestInFlight = true;
   const placeholderMessage = createMessage("assistant", "", "");
   appState.messages.splice(messageIndex, 0, placeholderMessage);
   renderMessages();
@@ -2200,7 +2518,14 @@ async function retryAssistantMessage(messageId) {
     await writeState();
     showChatStatus("重试失败。", 3200);
   } finally {
+    replyRequestInFlight = false;
     setSending(false);
+    if (backgroundMessagePendingAfterBusy) {
+      backgroundMessagePendingAfterBusy = false;
+      void triggerBackgroundMessage();
+    } else {
+      void scheduleBackgroundMessageTimer();
+    }
   }
 }
 
@@ -2247,7 +2572,7 @@ function createMessageElement(message, index) {
           appState.profile.partnerAvatar
             ? `background-image:url(${appState.profile.partnerAvatar});`
             : ""
-        }"></div>`
+        }" role="button" aria-label="双击戳一戳角色头像" title="双击戳一戳"></div>`
       : "";
 
   row.innerHTML = `
@@ -2287,6 +2612,20 @@ function createMessageElement(message, index) {
       activeThinkingMessageId = message.id || "";
       dom.thinkingContent.textContent = activeThinking;
       openSheet(dom.thinkingSheet);
+    });
+  }
+
+  const avatar = row.querySelector(".avatar");
+  if (avatar) {
+    let lastAvatarTapAt = 0;
+    avatar.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const now = Date.now();
+      const isDoubleTap = event.detail >= 2 || now - lastAvatarTapAt <= 320;
+      lastAvatarTapAt = now;
+      if (isDoubleTap) {
+        handleAvatarPoke(avatar);
+      }
     });
   }
 
@@ -2379,6 +2718,21 @@ function vibrateDevice(duration = 200) {
   if (typeof navigator?.vibrate === "function") {
     navigator.vibrate(duration);
   }
+}
+
+function handleAvatarPoke(avatar) {
+  if (!(avatar instanceof HTMLElement)) return;
+  vibrateDevice(100);
+  avatar.classList.remove("avatar-poke-shake");
+  void avatar.offsetWidth;
+  avatar.classList.add("avatar-poke-shake");
+  avatar.addEventListener(
+    "animationend",
+    () => {
+      avatar.classList.remove("avatar-poke-shake");
+    },
+    { once: true }
+  );
 }
 
 function waitForNextFrame() {
@@ -2606,16 +2960,181 @@ function autoGrowTextarea() {
   dom.messageInput.style.height = `${Math.min(dom.messageInput.scrollHeight, 140)}px`;
 }
 
-function safeJsonParse(text) {
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    const match = String(text || "").match(/\{[\s\S]*\}/);
-    if (match) {
-      return JSON.parse(match[0]);
+function getJsonObjectCandidate(text) {
+  const cleaned = String(text || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+
+  return firstBrace >= 0 && lastBrace > firstBrace
+    ? cleaned.slice(firstBrace, lastBrace + 1)
+    : cleaned;
+}
+
+function findLooseJsonKey(source, key, startIndex = 0) {
+  const text = String(source || "");
+  const target = `"${key}"`;
+  let keyIndex = Math.max(0, startIndex);
+
+  while ((keyIndex = text.indexOf(target, keyIndex)) >= 0) {
+    let cursor = keyIndex + target.length;
+    while (cursor < text.length && /\s/.test(text[cursor])) {
+      cursor += 1;
     }
-    throw error;
+    if (text[cursor] === ":") {
+      return keyIndex;
+    }
+    keyIndex += target.length;
   }
+
+  return -1;
+}
+
+function isLooseJsonStringClose(source, quoteIndex, nextKeys = []) {
+  const text = String(source || "");
+  let cursor = quoteIndex + 1;
+  while (cursor < text.length && /\s/.test(text[cursor])) {
+    cursor += 1;
+  }
+
+  if (cursor >= text.length || text[cursor] === "}") {
+    return true;
+  }
+
+  if (text[cursor] !== ",") {
+    return false;
+  }
+
+  cursor += 1;
+  while (cursor < text.length && /\s/.test(text[cursor])) {
+    cursor += 1;
+  }
+
+  return nextKeys.some((nextKey) => text.startsWith(`"${nextKey}"`, cursor));
+}
+
+function readLooseJsonStringValue(source, startIndex, nextKeys = []) {
+  const text = String(source || "");
+  let value = "";
+
+  for (let index = Math.max(0, startIndex); index < text.length; index += 1) {
+    const char = text[index];
+
+    if (char === '"' && isLooseJsonStringClose(text, index, nextKeys)) {
+      return {
+        value,
+        nextIndex: index + 1,
+      };
+    }
+
+    if (char !== "\\") {
+      value += char;
+      continue;
+    }
+
+    const nextChar = text[index + 1];
+    if (typeof nextChar !== "string") {
+      value += char;
+      continue;
+    }
+
+    if (nextChar === "u") {
+      const unicodeHex = text.slice(index + 2, index + 6);
+      if (/^[0-9a-fA-F]{4}$/.test(unicodeHex)) {
+        value += String.fromCharCode(parseInt(unicodeHex, 16));
+        index += 5;
+        continue;
+      }
+    }
+
+    const escapeMap = {
+      '"': '"',
+      "\\": "\\",
+      "/": "/",
+      b: "\b",
+      f: "\f",
+      n: "\n",
+      r: "\r",
+      t: "\t",
+    };
+
+    value += Object.prototype.hasOwnProperty.call(escapeMap, nextChar)
+      ? escapeMap[nextChar]
+      : nextChar;
+    index += 1;
+  }
+
+  return {
+    value,
+    nextIndex: text.length,
+  };
+}
+
+function extractLooseJsonStringField(source, key, knownKeys = [], startIndex = 0) {
+  const text = String(source || "");
+  const keyIndex = findLooseJsonKey(text, key, startIndex);
+  if (keyIndex < 0) return null;
+
+  const colonIndex = text.indexOf(":", keyIndex + key.length + 2);
+  if (colonIndex < 0) return null;
+
+  let valueIndex = colonIndex + 1;
+  while (valueIndex < text.length && /\s/.test(text[valueIndex])) {
+    valueIndex += 1;
+  }
+
+  if (text[valueIndex] !== '"') return null;
+
+  return readLooseJsonStringValue(
+    text,
+    valueIndex + 1,
+    knownKeys.filter((knownKey) => knownKey !== key)
+  );
+}
+
+function extractLooseAssistantPayload(text) {
+  const candidate = getJsonObjectCandidate(text);
+  const knownKeys = ["thinking", "reply"];
+  const thinking = extractLooseJsonStringField(candidate, "thinking", knownKeys);
+  const reply =
+    extractLooseJsonStringField(
+      candidate,
+      "reply",
+      knownKeys,
+      thinking?.nextIndex || 0
+    ) || extractLooseJsonStringField(candidate, "reply", knownKeys);
+
+  if (!thinking && !reply) return null;
+
+  return {
+    thinking: thinking?.value || "",
+    reply: reply?.value || "",
+  };
+}
+
+function safeJsonParse(text) {
+  const source = String(text || "").trim();
+  const candidates = Array.from(new Set([source, getJsonObjectCandidate(source)]));
+  let parseError = null;
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      return JSON.parse(candidate);
+    } catch (error) {
+      parseError = error;
+    }
+  }
+
+  const loosePayload = extractLooseAssistantPayload(source);
+  if (loosePayload?.reply) {
+    return loosePayload;
+  }
+
+  throw parseError || new Error("返回内容不是有效 JSON。");
 }
 
 function extractTextContent(rawContent) {
@@ -3025,6 +3544,7 @@ async function handleSendMessage(event) {
   event.preventDefault();
   const text = dom.messageInput.value.trim();
   if (!text) return;
+  if (replyRequestInFlight) return;
 
   closeMessageMenu();
   const userMessage = createMessage("user", text, "");
@@ -3037,6 +3557,7 @@ async function handleSendMessage(event) {
   dom.messageInput.value = "";
   autoGrowTextarea();
   setSending(true);
+  replyRequestInFlight = true;
   const historyForRequest = appState.messages.slice();
   const assistantMessage = createMessage("assistant", "", "");
   appState.messages.push(assistantMessage);
@@ -3068,8 +3589,15 @@ async function handleSendMessage(event) {
     renderMessages();
     await writeState();
   } finally {
+    replyRequestInFlight = false;
     setSending(false);
     dom.messageInput.focus();
+    if (backgroundMessagePendingAfterBusy) {
+      backgroundMessagePendingAfterBusy = false;
+      void triggerBackgroundMessage();
+    } else {
+      void scheduleBackgroundMessageTimer();
+    }
   }
 }
 
@@ -3507,6 +4035,44 @@ async function saveApiSettings() {
   closeSheet(dom.apiSheet);
 }
 
+async function saveBackgroundMessageSettings() {
+  const minMinutes = normalizeMinuteValue(
+    dom.backgroundMessageMin?.value,
+    DEFAULT_STATE.backgroundMessage.minMinutes
+  );
+  const maxMinutes = normalizeMinuteValue(
+    dom.backgroundMessageMax?.value,
+    DEFAULT_STATE.backgroundMessage.maxMinutes
+  );
+  const enabled = Boolean(dom.backgroundMessageEnabled?.checked);
+  const normalizedMin = Math.min(minMinutes, maxMinutes);
+  const normalizedMax = Math.max(minMinutes, maxMinutes);
+
+  appState.backgroundMessage = normalizeBackgroundMessageConfig({
+    ...appState.backgroundMessage,
+    enabled,
+    minMinutes: normalizedMin,
+    maxMinutes: normalizedMax,
+    nextFireAt: 0,
+    lastDelayMinutes: appState.backgroundMessage?.lastDelayMinutes || normalizedMin,
+  });
+
+  if (enabled) {
+    await planNextBackgroundMessageRun(false);
+  }
+
+  await writeState();
+  await scheduleBackgroundMessageTimer();
+  renderBackgroundMessageForm();
+  closeSheet(dom.backgroundMessageSheet);
+  showChatStatus(
+    enabled
+      ? `后台消息已开启，将在 ${appState.backgroundMessage.minMinutes} 到 ${appState.backgroundMessage.maxMinutes} 分钟之间随机发送。`
+      : "后台消息已关闭。",
+    3600
+  );
+}
+
 function bindSwipeNavigation() {
   const surface = document.querySelector(".app-shell");
   const touchSurface = dom.panelTrack || surface;
@@ -3594,6 +4160,9 @@ function bindSheetClosers() {
   document.querySelectorAll("[data-close-theme]").forEach((element) => {
     element.addEventListener("click", () => closeSheet(dom.themeSheet));
   });
+  document.querySelectorAll("[data-close-background-message]").forEach((element) => {
+    element.addEventListener("click", () => closeSheet(dom.backgroundMessageSheet));
+  });
   document.querySelectorAll("[data-close-message-edit]").forEach((element) => {
     element.addEventListener("click", closeMessageEditModal);
   });
@@ -3608,6 +4177,15 @@ function setupEvents() {
   dom.chatSettingsTrigger.addEventListener("click", () => openSheet(dom.profileSheet));
   dom.saveProfileBtn.addEventListener("click", saveProfile);
   dom.saveApiBtn.addEventListener("click", saveApiSettings);
+  dom.saveBackgroundMessageBtn?.addEventListener("click", () => {
+    void saveBackgroundMessageSettings();
+  });
+  dom.requestNotificationPermissionBtn?.addEventListener("click", () => {
+    void requestBrowserNotificationPermission();
+  });
+  dom.testBackgroundNotificationBtn?.addEventListener("click", () => {
+    void testBackgroundNotification();
+  });
   dom.fetchModelsBtn.addEventListener("click", fetchModels);
   dom.modelSelect.addEventListener("change", () => {
     if (dom.modelSelect.value) {
@@ -3732,6 +4310,7 @@ async function initializeApp() {
   renderProfile();
   renderApiForm();
   renderThemeForm();
+  renderBackgroundMessageForm();
   renderMessages();
   setupEvents();
   await registerServiceWorker();
@@ -3741,6 +4320,7 @@ async function initializeApp() {
   renderWorldbookList();
   autoGrowTextarea();
   applyChatTheme();
+  await scheduleBackgroundMessageTimer();
 }
 
 function startShaderBackground() {

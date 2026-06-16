@@ -449,6 +449,36 @@ button {
   overflow: hidden;
   clip-path: circle(50%);
   -webkit-clip-path: circle(50%);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.avatar.avatar-poke-shake {
+  animation: avatar-poke-shake 360ms ease-in-out;
+  transform-origin: center;
+}
+
+@keyframes avatar-poke-shake {
+  0%,
+  100% {
+    transform: translateX(0) rotate(0deg);
+  }
+
+  20% {
+    transform: translateX(-3px) rotate(-4deg);
+  }
+
+  40% {
+    transform: translateX(3px) rotate(4deg);
+  }
+
+  60% {
+    transform: translateX(-2px) rotate(-3deg);
+  }
+
+  80% {
+    transform: translateX(2px) rotate(3deg);
+  }
 }
 
 .avatar.default-avatar::before {
@@ -695,6 +725,15 @@ button {
 }
 
 .theme-panel {
+  background: rgba(255, 255, 255, 0.94);
+  color: #141413;
+  border-radius: 30px;
+  padding: 22px 18px 18px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.24);
+  overflow: auto;
+}
+
+.background-message-panel {
   background: rgba(255, 255, 255, 0.94);
   color: #141413;
   border-radius: 30px;
@@ -1198,6 +1237,37 @@ button {
 
 .temperature-row input[type="number"] {
   width: 90px;
+}
+
+.interval-range-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.interval-range-sep,
+.interval-range-unit {
+  color: rgba(20, 20, 19, 0.68);
+  font-size: 14px;
+}
+
+.background-message-status-box {
+  margin-top: 6px;
+  border-radius: 18px;
+  background: rgba(20, 20, 19, 0.05);
+  border: 1px solid rgba(20, 20, 19, 0.08);
+  padding: 12px 14px;
+  color: rgba(20, 20, 19, 0.72);
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.background-message-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .primary-save {
