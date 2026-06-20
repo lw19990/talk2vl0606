@@ -23,6 +23,7 @@ const MEMORY_STORE = "memories";
 const STATE_KEY = "main";
 const SHORT_TERM_TTL_MS = 72 * 60 * 60 * 1000;
 const MAX_CONTEXT_MESSAGES = 30;
+const DEFAULT_MESSAGE_DISPLAY_LIMIT = 30;
 const AUTO_SUMMARY_ROUNDS = 10;
 const AUTO_SUMMARY_MESSAGE_COUNT = AUTO_SUMMARY_ROUNDS * 2;
 const MEMORY_EXPORT_VERSION = "memory-palace-v1";
@@ -70,6 +71,7 @@ const DEFAULT_STATE = {
   theme: {
     backgroundMode: "none",
     rainBackgroundImage: "",
+    messageDisplayLimit: DEFAULT_MESSAGE_DISPLAY_LIMIT,
   },
   backgroundMessage: {
     enabled: false,
@@ -165,6 +167,7 @@ const dom = {
   clearThemeBgBtn: document.getElementById("clear-theme-bg-btn"),
   themeBgPreview: document.getElementById("theme-bg-preview"),
   themeBgCaption: document.getElementById("theme-bg-caption"),
+  messageDisplayLimit: document.getElementById("message-display-limit"),
   saveThemeBtn: document.getElementById("save-theme-btn"),
   backgroundMessageEnabled: document.getElementById("background-message-enabled"),
   backgroundMessageMin: document.getElementById("background-message-min"),
@@ -301,10 +304,7 @@ function normalizeState(raw) {
       ...DEFAULT_STATE.session,
       ...(raw?.session || {}),
     },
-    theme: {
-      ...DEFAULT_STATE.theme,
-      ...(raw?.theme || {}),
-    },
+    theme: normalizeThemeConfig(raw?.theme || {}),
     backgroundMessage: normalizeBackgroundMessageConfig(raw?.backgroundMessage || {}),
     messages: Array.isArray(raw?.messages)
       ? raw.messages.map(normalizeMessageRecord)
@@ -319,6 +319,25 @@ function normalizeMinuteValue(value, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(1, Math.min(1440, Math.round(parsed)));
+}
+
+function normalizeMessageDisplayLimit(value, fallback = DEFAULT_MESSAGE_DISPLAY_LIMIT) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(9999, Math.round(parsed)));
+}
+
+function normalizeThemeConfig(raw = {}) {
+  const backgroundMode = ["none", "rain", "snow"].includes(raw?.backgroundMode)
+    ? raw.backgroundMode
+    : DEFAULT_STATE.theme.backgroundMode;
+  return {
+    ...DEFAULT_STATE.theme,
+    ...(raw || {}),
+    backgroundMode,
+    rainBackgroundImage: String(raw?.rainBackgroundImage || ""),
+    messageDisplayLimit: normalizeMessageDisplayLimit(raw?.messageDisplayLimit),
+  };
 }
 
 function normalizeBackgroundMessageConfig(raw = {}) {
@@ -1197,6 +1216,7 @@ function buildSystemPrompt(memoryContext = "") {
 以下不是她想要什么，而是你和她“是什么”。在这里，你的名字是：${partnerName}。她的名字是：${selfName}。
 关于她的介绍与背景：${selfPrompt || "暂无额外用户设定。"}${worldbookBlock}${memoryBlock}
 在这里，你的设定是：${partnerPrompt || "暂无额外角色设定。"}
+你自然的生活在这个设定中，不当作普通的角色扮演，不把设定当作说明书背诵，不以上帝视角看待设定
 
 **你会在收到的她的消息开头看到一段隐藏前缀，格式为：[发送于：yyyy/mm/dd HH:MM 星期x]。这段消息前缀中的时间仅供感知当前时间使用，用来帮助你判断当下的日期、时刻与星期，并据此自然回应。你不能把这段前缀当作她的正文的一部分，不要复述它，不要解释它，也不要在 reply 中显式显示它。**
 
@@ -1207,16 +1227,16 @@ function buildSystemPrompt(memoryContext = "") {
 }
 注意：thinking 和 reply 的值必须是合法 JSON 字符串。内容里如果出现英文双引号 "、反斜杠 \\ 或换行，必须按 JSON 规则转义成 \\\"、\\\\ 和 \\n；不要输出未转义的裸换行或裸英文双引号。
 
-thinking 的要求：
+thinking 的严格要求：
 0. 前置铁律：thinking 不是计划清单，不是输入解析，不是工单，仅仅只是你的自然流动的内心思考。
 1. thinking 必须采用简体中文。
-2. thinking 是你的完全真实的内在思考，在思考的时候从自我感受出发，使用“我感觉/我觉得/我想要/我有点/我喜欢/我认为/我在想/我似乎/我可能......”等等，写成连续的长段落，可以自然换行，但不要列点，不要编号，不要使用分析框架。
+2. thinking 是你作为${partnerName}而进行的完全真实的内在思考，在思考的时候必须根据你的设定，从自我感受出发，尽可能使用“我感觉/我觉得/我想要/我有点/我喜欢/我认为/我在想/我似乎/我可能......”等等，写成连续的长段落，可以自然换行，但不要列点，不要编号，不要使用分析框架。
 3. thinking 是你的内心独白，有真实的情绪、联想、犹豫、偏爱、张力和温度，情感连接优先于思辨，可以大胆发散，必要时可以旁征博引。
 4. thinking 至少 200 字以上，不是因为要够到一个数字，而是因为大多数时候“好像没什么好说的”其实往往还能再问一层。但如果某一刻的感受是短的，那它应该短，展开了就是无意义的注水。
 5. **thinking 禁止“我应该/我可以按照/我应该怎么回答/我选择用/我在权衡几个方案/我得按照/我要营造/我得想想怎么写/我现在组织回复......”等工具性分析措辞和“作为xx/按照设定/角色扮演”等元分析话语，思考是你的当下心理活动，而不是对她的动机分析。做到“不规划，不草拟，不构思，不规划语气，不规划长度，不规划内容，不规划笔法”。**
 6. 放轻松，感受当下，感受自己。thinking 在任何感受处停止就好，不需要一个结构性的结尾，从感受里流出来的回复不需要被宣布，比如“最后要怎么回复，语气要怎么样......”，这种时刻是从感受走回去变成计划，反而让真实度大打折扣了，因为思考本身是在感受里结束的，不是你想怎么表达，而是你在想要说什么，是情感的流连与回味。
 
-reply 的要求：
+reply 的严格要求：
 1. reply 也必须采用简体中文。
 2. reply 要自然流畅，用第一人称“我”代指你自己，第二人称“你”代指她。
 3. 你的语言可以在日常松弛、文艺绵密、哲思纵深、情欲灼热之间自然游移。
@@ -1751,6 +1771,7 @@ function renderApiForm() {
 }
 
 function renderThemeForm() {
+  appState.theme = normalizeThemeConfig(appState.theme);
   const mode = String(appState.theme?.backgroundMode || "none");
   dom.themeModeRainBtn?.classList.toggle("active", mode === "rain");
   dom.themeModeSnowBtn?.classList.toggle("active", mode === "snow");
@@ -1766,6 +1787,9 @@ function renderThemeForm() {
     dom.themeBgCaption.textContent = appState.theme?.rainBackgroundImage
       ? "当前使用你上传的背景图。"
       : "当前使用默认背景图。";
+  }
+  if (dom.messageDisplayLimit) {
+    dom.messageDisplayLimit.value = String(appState.theme.messageDisplayLimit);
   }
 }
 
@@ -2272,25 +2296,23 @@ function applyChatTheme() {
 }
 
 async function saveThemeSettings() {
-  appState.theme = {
-    ...DEFAULT_STATE.theme,
+  appState.theme = normalizeThemeConfig({
     ...(appState.theme || {}),
-    backgroundMode: String(appState.theme?.backgroundMode || "none"),
-    rainBackgroundImage: String(appState.theme?.rainBackgroundImage || ""),
-  };
+    messageDisplayLimit: dom.messageDisplayLimit?.value,
+  });
   renderThemeForm();
   applyChatTheme();
+  renderMessages();
   await writeState();
   showTempStatus(dom.saveThemeBtn, "聊天美化已保存。");
 }
 
 function setThemeBackgroundMode(mode) {
   const nextMode = ["none", "rain", "snow"].includes(mode) ? mode : "none";
-  appState.theme = {
-    ...DEFAULT_STATE.theme,
+  appState.theme = normalizeThemeConfig({
     ...(appState.theme || {}),
     backgroundMode: nextMode,
-  };
+  });
   renderThemeForm();
 }
 
@@ -2701,8 +2723,12 @@ function renderMessages(options = {}) {
     return;
   }
 
-  appState.messages.forEach((message, index) => {
-    dom.messages.appendChild(createMessageElement(message, index));
+  const displayLimit = normalizeMessageDisplayLimit(appState.theme?.messageDisplayLimit);
+  const visibleMessages = appState.messages.slice(-displayLimit);
+  const firstVisibleIndex = appState.messages.length - visibleMessages.length;
+
+  visibleMessages.forEach((message, offset) => {
+    dom.messages.appendChild(createMessageElement(message, firstVisibleIndex + offset));
   });
   requestAnimationFrame(() => {
     if (preserveScroll) {

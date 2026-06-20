@@ -557,6 +557,26 @@
           </div>
         </section>
 
+        <section class="theme-card">
+          <div class="theme-card-stack">
+            <div>
+              <h4>消息显示条数</h4>
+              <p>只限制界面中最多显示多少条消息，不会影响 AI 请求时读取的上下文。</p>
+            </div>
+            <label class="field theme-display-limit-field">
+              <span>最大显示条数</span>
+              <input
+                id="message-display-limit"
+                type="number"
+                min="1"
+                max="9999"
+                step="1"
+                placeholder="30"
+              />
+            </label>
+          </div>
+        </section>
+
         <button class="primary-save" id="save-theme-btn" type="button">
           保存美化
         </button>
