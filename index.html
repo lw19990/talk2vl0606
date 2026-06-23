@@ -250,6 +250,47 @@
       </div>
     </div>
 
+    <div class="sheet settings-sheet" id="mcp-sheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-close-mcp></div>
+      <div class="sheet-panel mcp-panel">
+        <button class="sheet-close" type="button" data-close-mcp>×</button>
+        <p class="sheet-kicker dark-text">MCP Tools</p>
+        <h3 class="memory-title">MCP工具</h3>
+        <p class="memory-hint">
+          连接支持 Streamable HTTP 或 SSE 的 MCP 中转服务器。前端会同步工具定义，并在模型请求工具时自动转发执行。
+        </p>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h4>连接 MCP 服务器</h4>
+          </div>
+
+          <label class="field">
+            <span>MCP 服务器地址</span>
+            <input id="mcp-server-url" type="text" placeholder="http://localhost:3000" />
+          </label>
+
+          <button class="primary-save" id="connect-mcp-btn" type="button">
+            连接/同步
+          </button>
+
+          <div class="mcp-status-box" id="mcp-status">
+            尚未连接 MCP 服务器。
+          </div>
+        </section>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h4>已加载工具</h4>
+            <span class="memory-count" id="mcp-tools-count">0 个</span>
+          </div>
+          <div class="mcp-tools-list" id="mcp-tools-list">
+            <div class="memory-empty">连接成功后会在这里显示工具清单。</div>
+          </div>
+        </section>
+      </div>
+    </div>
+
     <div class="sheet settings-sheet" id="memory-sheet" aria-hidden="true">
       <div class="sheet-backdrop" data-close-memory></div>
       <div class="sheet-panel memory-panel">

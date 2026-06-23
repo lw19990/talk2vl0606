@@ -1,6 +1,8 @@
 const SVG_MAP = {
   设置:
     '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>',
+  MCP工具:
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><path d="M10 6.5h4"/><path d="M17.5 10v4"/><path d="M6.5 10v2a2 2 0 0 0 2 2H14"/></svg>',
   后台消息:
     '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h.01"/><path d="M12 10h.01"/><path d="M16 10h.01"/></svg>',
   记忆:
@@ -15,7 +17,7 @@ const SVG_MAP = {
     '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><path d="M8.62 9.8A2.25 2.25 0 1 1 12 6.836a2.25 2.25 0 1 1 3.38 2.966l-2.626 2.856a.998.998 0 0 1-1.507 0z"/></svg>',
 };
 
-const TOOL_ITEMS = ["设置", "后台消息", "记忆", "美化", "世界书", "写作", "日记"];
+const TOOL_ITEMS = ["设置", "MCP工具", "后台消息", "记忆", "美化", "世界书", "写作", "日记"];
 const DB_NAME = "ai-chat-rain-glass";
 const DB_VERSION = 2;
 const APP_STATE_STORE = "appState";
@@ -83,6 +85,10 @@ const DEFAULT_STATE = {
     nextFireAt: 0,
     lastDelayMinutes: 0,
   },
+  mcp: {
+    serverUrl: "",
+    tools: [],
+  },
   messages: [],
   worldbooks: [],
 };
@@ -106,6 +112,7 @@ const dom = {
   thinkingContent: document.getElementById("thinking-content"),
   profileSheet: document.getElementById("profile-sheet"),
   apiSheet: document.getElementById("api-sheet"),
+  mcpSheet: document.getElementById("mcp-sheet"),
   memorySheet: document.getElementById("memory-sheet"),
   worldbookSheet: document.getElementById("worldbook-sheet"),
   themeSheet: document.getElementById("theme-sheet"),
@@ -134,6 +141,11 @@ const dom = {
   temperatureRange: document.getElementById("temperature-range"),
   temperatureInput: document.getElementById("temperature-input"),
   saveApiBtn: document.getElementById("save-api-btn"),
+  mcpServerUrl: document.getElementById("mcp-server-url"),
+  connectMcpBtn: document.getElementById("connect-mcp-btn"),
+  mcpStatus: document.getElementById("mcp-status"),
+  mcpToolsCount: document.getElementById("mcp-tools-count"),
+  mcpToolsList: document.getElementById("mcp-tools-list"),
   importMemoryBtn: document.getElementById("import-memory-btn"),
   exportMemoryBtn: document.getElementById("export-memory-btn"),
   memoryImportInput: document.getElementById("memory-import-input"),
@@ -206,6 +218,8 @@ let backgroundMessageTriggerRunning = false;
 let backgroundMessagePendingAfterBusy = false;
 let replyRequestInFlight = false;
 let sessionExtraMessageDisplayCount = 0;
+let McpServerUrl = "";
+let mcpTools = [];
 let messagePullState = {
   tracking: false,
   startY: 0,
@@ -318,11 +332,21 @@ function normalizeState(raw) {
     },
     theme: normalizeThemeConfig(raw?.theme || {}),
     backgroundMessage: normalizeBackgroundMessageConfig(raw?.backgroundMessage || {}),
+    mcp: normalizeMcpConfig(raw?.mcp || {}),
     messages: Array.isArray(raw?.messages)
       ? raw.messages.map(normalizeMessageRecord)
       : [],
     worldbooks: Array.isArray(raw?.worldbooks)
       ? raw.worldbooks.map(normalizeWorldbookRecord).filter((item) => item.content)
+      : [],
+  };
+}
+
+function normalizeMcpConfig(raw = {}) {
+  return {
+    serverUrl: String(raw?.serverUrl || ""),
+    tools: Array.isArray(raw?.tools)
+      ? raw.tools.map(normalizeMcpToolDefinition).filter(Boolean)
       : [],
   };
 }
@@ -861,6 +885,288 @@ function showChatStatus(message, timeout = 2600) {
         dom.chatStatus.textContent = "";
       }
     }, timeout);
+  }
+}
+
+function setMcpStatus(message, type = "") {
+  if (!dom.mcpStatus) return;
+  dom.mcpStatus.textContent = message || "尚未连接 MCP 服务器。";
+  dom.mcpStatus.classList.toggle("success", type === "success");
+  dom.mcpStatus.classList.toggle("error", type === "error");
+}
+
+function getMcpEndpoint(path) {
+  const baseUrl = String(McpServerUrl || appState.mcp?.serverUrl || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("请先填写 MCP 服务器地址。");
+  }
+  return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function parseMaybeJson(value) {
+  if (typeof value !== "string") return value;
+  const text = value.trim();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    return value;
+  }
+}
+
+function parseMcpResponseText(text) {
+  const parsed = parseMaybeJson(text);
+  if (parsed !== text) return parsed;
+  const dataLines = String(text || "")
+    .split(/\r?\n/)
+    .filter((line) => line.trim().startsWith("data:"))
+    .map((line) => line.replace(/^\s*data:\s?/, "").trim())
+    .filter((line) => line && line !== "[DONE]");
+  if (!dataLines.length) return text;
+  const candidates = [dataLines[dataLines.length - 1], dataLines.join("\n")];
+  for (const candidate of candidates) {
+    const value = parseMaybeJson(candidate);
+    if (value !== candidate) return value;
+  }
+  return dataLines.join("\n");
+}
+
+function normalizeToolInputSchema(tool = {}) {
+  const schema =
+    tool.input_schema ||
+    tool.inputSchema ||
+    tool.parameters ||
+    tool.function?.parameters ||
+    tool.schema;
+  if (schema && typeof schema === "object" && !Array.isArray(schema)) {
+    return schema;
+  }
+  return {
+    type: "object",
+    properties: {},
+  };
+}
+
+function normalizeMcpToolDefinition(tool = {}) {
+  if (!tool || typeof tool !== "object") return null;
+  if (tool.type === "function" && tool.function?.name) {
+    return {
+      type: "function",
+      function: {
+        name: String(tool.function.name),
+        description: String(tool.function.description || tool.description || ""),
+        parameters: normalizeToolInputSchema(tool),
+      },
+    };
+  }
+
+  const name = String(tool.name || tool.id || tool.function?.name || "").trim();
+  if (!name) return null;
+  return {
+    type: "function",
+    function: {
+      name,
+      description: String(tool.description || tool.title || tool.function?.description || ""),
+      parameters: normalizeToolInputSchema(tool),
+    },
+  };
+}
+
+function getLoadedMcpTools() {
+  return (Array.isArray(mcpTools) ? mcpTools : [])
+    .map(normalizeMcpToolDefinition)
+    .filter(Boolean);
+}
+
+function extractToolsArray(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.tools)) return payload.tools;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.result?.tools)) return payload.result.tools;
+  return [];
+}
+
+function renderMcpToolList() {
+  const tools = getLoadedMcpTools();
+  if (dom.mcpToolsCount) {
+    dom.mcpToolsCount.textContent = `${tools.length} 个`;
+  }
+  if (!dom.mcpToolsList) return;
+  dom.mcpToolsList.innerHTML = "";
+  if (!tools.length) {
+    dom.mcpToolsList.innerHTML = '<div class="memory-empty">连接成功后会在这里显示工具清单。</div>';
+    return;
+  }
+  tools.forEach((tool) => {
+    const card = document.createElement("article");
+    card.className = "mcp-tool-card";
+    const name = tool.function?.name || "未命名工具";
+    const description = tool.function?.description || "无描述";
+    card.innerHTML = `
+      <h5>${escapeHtml(name)}</h5>
+      <p>${escapeHtml(description)}</p>
+    `;
+    dom.mcpToolsList.appendChild(card);
+  });
+}
+
+function renderMcpForm() {
+  appState.mcp = normalizeMcpConfig(appState.mcp || {});
+  McpServerUrl = String(appState.mcp.serverUrl || "").trim();
+  mcpTools = Array.isArray(appState.mcp.tools) ? appState.mcp.tools : [];
+  window.McpServerUrl = McpServerUrl;
+  window.mcpTools = mcpTools;
+  if (dom.mcpServerUrl) {
+    dom.mcpServerUrl.value = McpServerUrl;
+  }
+  setMcpStatus(
+    mcpTools.length
+      ? `MCP 已加载 ${mcpTools.length} 个工具。点击“连接/同步”可刷新工具清单。`
+      : "尚未连接 MCP 服务器。"
+  );
+  renderMcpToolList();
+}
+
+async function fetchMcpTools() {
+  const url = String(dom.mcpServerUrl?.value || McpServerUrl || "").trim().replace(/\/+$/, "");
+  if (!url) {
+    setMcpStatus("请先填写 MCP 服务器地址。", "error");
+    showChatStatus("请先填写 MCP 服务器地址。", 3200);
+    return [];
+  }
+
+  McpServerUrl = url;
+  window.McpServerUrl = McpServerUrl;
+  if (dom.connectMcpBtn) {
+    dom.connectMcpBtn.disabled = true;
+    dom.connectMcpBtn.textContent = "同步中...";
+  }
+  setMcpStatus("正在连接 MCP 服务器并同步工具清单...");
+
+  try {
+    const response = await fetch(getMcpEndpoint("/tools"), {
+      method: "GET",
+      headers: {
+        Accept: "application/json, text/event-stream",
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`MCP 工具同步失败：${response.status}`);
+    }
+    const contentType = response.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+      ? await response.json()
+      : parseMcpResponseText(await response.text());
+    const tools = extractToolsArray(data).map(normalizeMcpToolDefinition).filter(Boolean);
+    mcpTools = tools;
+    appState.mcp = normalizeMcpConfig({
+      serverUrl: McpServerUrl,
+      tools,
+    });
+    await writeState();
+    window.mcpTools = mcpTools;
+    renderMcpToolList();
+    setMcpStatus(`MCP 连接成功，已加载 ${tools.length} 个工具`, "success");
+    showChatStatus(`MCP 连接成功，已加载 ${tools.length} 个工具`, 3600);
+    console.info(`MCP 连接成功，已加载 ${tools.length} 个工具`, tools);
+    return tools;
+  } catch (error) {
+    console.error("MCP 连接失败", error);
+    mcpTools = [];
+    appState.mcp = normalizeMcpConfig({
+      ...appState.mcp,
+      serverUrl: McpServerUrl,
+      tools: [],
+    });
+    window.mcpTools = mcpTools;
+    await writeState().catch((writeError) => console.error("保存 MCP 状态失败", writeError));
+    renderMcpToolList();
+    const message = `MCP 连接失败：${error.message || "未知错误"}`;
+    setMcpStatus(message, "error");
+    showChatStatus(message, 4200);
+    return [];
+  } finally {
+    if (dom.connectMcpBtn) {
+      dom.connectMcpBtn.disabled = false;
+      dom.connectMcpBtn.textContent = "连接/同步";
+    }
+  }
+}
+
+function normalizeAiToolCall(raw = {}) {
+  if (!raw || typeof raw !== "object") return null;
+  const functionInfo = raw.function || raw;
+  const name = String(
+    raw.name ||
+      raw.tool_name ||
+      raw.toolName ||
+      functionInfo.name ||
+      ""
+  ).trim();
+  if (!name) return null;
+  const input =
+    raw.input ??
+    raw.arguments ??
+    raw.args ??
+    functionInfo.arguments ??
+    functionInfo.input ??
+    {};
+  return {
+    id: String(raw.id || raw.tool_use_id || raw.call_id || `tool_${createMessageId()}`),
+    name,
+    input: parseMaybeJson(input),
+  };
+}
+
+async function executeMcpTool(toolCall) {
+  const normalizedCall = normalizeAiToolCall(toolCall);
+  if (!normalizedCall) {
+    throw new Error("模型返回的工具调用缺少工具名。");
+  }
+
+  const statusText = `AI 正在尝试调用工具 [${normalizedCall.name}]...`;
+  showChatStatus(statusText, 10000);
+  console.info(statusText, normalizedCall);
+
+  try {
+    const response = await fetch(getMcpEndpoint("/tools/call"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/plain",
+      },
+      body: JSON.stringify({
+        id: normalizedCall.id,
+        name: normalizedCall.name,
+        input: normalizedCall.input,
+        arguments: normalizedCall.input,
+      }),
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const result = contentType.includes("application/json")
+      ? await response.json()
+      : parseMcpResponseText(await response.text());
+    if (!response.ok) {
+      const detail = typeof result === "string" ? result : JSON.stringify(result);
+      throw new Error(detail || `MCP 工具执行失败：${response.status}`);
+    }
+    console.info(`MCP 工具 [${normalizedCall.name}] 执行完成`, result);
+    return {
+      toolCall: normalizedCall,
+      result,
+    };
+  } catch (error) {
+    console.error(`MCP 工具 [${normalizedCall.name}] 执行失败`, error);
+    showChatStatus(`MCP 工具执行失败：${error.message || "未知错误"}`, 5200);
+    return {
+      toolCall: normalizedCall,
+      result: {
+        error: true,
+        message: error.message || "未知错误",
+      },
+    };
   }
 }
 
@@ -1864,6 +2170,11 @@ function renderToolGrid() {
     `;
     if (name === "设置") {
       button.addEventListener("click", () => openSheet(dom.apiSheet));
+    } else if (name === "MCP工具") {
+      button.addEventListener("click", () => {
+        renderMcpForm();
+        openSheet(dom.mcpSheet);
+      });
     } else if (name === "后台消息") {
       button.addEventListener("click", () => {
         renderBackgroundMessageForm();
@@ -3322,6 +3633,7 @@ function extractTextContent(rawContent) {
     ? rawContent
         .map((part) => {
           if (typeof part === "string") return part;
+          if (part?.type === "tool_use" || part?.type === "tool_call") return "";
           if (typeof part?.text === "string") return part.text;
           if (typeof part?.content === "string") return part.content;
           return "";
@@ -3332,6 +3644,109 @@ function extractTextContent(rawContent) {
     : typeof rawContent?.text === "string"
     ? rawContent.text
     : "";
+}
+
+function extractToolCallsFromContent(rawContent) {
+  if (!Array.isArray(rawContent)) return [];
+  return rawContent
+    .filter((part) => part?.type === "tool_use" || part?.type === "tool_call")
+    .map(normalizeAiToolCall)
+    .filter(Boolean);
+}
+
+function getToolCallsFromMessage(message = {}) {
+  const directCalls =
+    message.tool_calls ||
+    message.toolCalls ||
+    message.tool_use ||
+    message.toolUse ||
+    [];
+  const fromDirect = (Array.isArray(directCalls) ? directCalls : [directCalls])
+    .map(normalizeAiToolCall)
+    .filter(Boolean);
+  return [
+    ...fromDirect,
+    ...extractToolCallsFromContent(message.content),
+  ];
+}
+
+function collectToolCallsFromPayload(payload, toolCallChunks) {
+  const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
+  const completedMessages = [
+    choice?.message,
+    payload?.message,
+  ].filter(Boolean);
+  const chunkMessages = [
+    choice?.delta,
+    payload?.delta,
+    ...completedMessages,
+  ].filter(Boolean);
+  const completedCalls = completedMessages.flatMap(getToolCallsFromMessage);
+
+  chunkMessages.forEach((message) => {
+    const chunks = message.tool_calls || message.toolCalls || [];
+    (Array.isArray(chunks) ? chunks : [chunks]).forEach((chunk) => {
+      const index = Number.isFinite(Number(chunk?.index)) ? Number(chunk.index) : toolCallChunks.length;
+      const existing = toolCallChunks[index] || {
+        id: "",
+        name: "",
+        arguments: "",
+      };
+      toolCallChunks[index] = {
+        id: existing.id || String(chunk?.id || ""),
+        name: existing.name || String(chunk?.function?.name || chunk?.name || ""),
+        arguments: `${existing.arguments || ""}${chunk?.function?.arguments || chunk?.arguments || ""}`,
+      };
+    });
+  });
+
+  return completedCalls;
+}
+
+function finalizeStreamToolCalls(toolCallChunks) {
+  return (Array.isArray(toolCallChunks) ? toolCallChunks : [])
+    .map((chunk) =>
+      normalizeAiToolCall({
+        id: chunk.id,
+        name: chunk.name,
+        input: chunk.arguments,
+      })
+    )
+    .filter(Boolean);
+}
+
+function stringifyToolResult(result) {
+  if (typeof result === "string") return result;
+  try {
+    return JSON.stringify(result);
+  } catch (error) {
+    return String(result);
+  }
+}
+
+function buildToolExchangeMessages(toolResults) {
+  const assistantToolCalls = toolResults.map(({ toolCall }) => ({
+    id: toolCall.id,
+    type: "function",
+    function: {
+      name: toolCall.name,
+      arguments: JSON.stringify(toolCall.input || {}),
+    },
+  }));
+  const toolMessages = toolResults.map(({ toolCall, result }) => ({
+    role: "tool",
+    tool_call_id: toolCall.id,
+    name: toolCall.name,
+    content: stringifyToolResult(result),
+  }));
+  return [
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: assistantToolCalls,
+    },
+    ...toolMessages,
+  ];
 }
 
 function findTopLevelJsonKey(source, key, startIndex = 0) {
@@ -3556,6 +3971,8 @@ async function requestAssistantReply(
   options = {}
 ) {
   const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
+  const onToolCall = typeof options.onToolCall === "function" ? options.onToolCall : null;
+  const toolDepth = Number(options.toolDepth || 0);
   const { api } = appState;
   const baseUrl = api.baseUrl.trim().replace(/\/+$/, "");
   if (!baseUrl || !api.apiKey.trim() || !api.model.trim()) {
@@ -3600,8 +4017,14 @@ async function requestAssistantReply(
         content: buildSystemPrompt(memoryContext),
       },
       ...windowMessages,
+      ...(Array.isArray(options.extraApiMessages) ? options.extraApiMessages : []),
     ],
   };
+  const availableMcpTools = getLoadedMcpTools();
+  if (availableMcpTools.length && toolDepth < 3) {
+    payload.tools = availableMcpTools;
+    payload.tool_choice = "auto";
+  }
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -3619,7 +4042,16 @@ async function requestAssistantReply(
 
   if (!response.body) {
     const data = await response.json();
-    const content = extractTextContent(data?.choices?.[0]?.message?.content);
+    const message = data?.choices?.[0]?.message || data?.message || {};
+    const toolCalls = getToolCallsFromMessage(message);
+    if (toolCalls.length) {
+      return handleMcpToolCalls(latestUserText, historyMessages, toolCalls, {
+        ...options,
+        onToolCall,
+        toolDepth,
+      });
+    }
+    const content = extractTextContent(message.content);
     if (!content) {
       throw new Error("接口未返回有效内容。");
     }
@@ -3642,6 +4074,8 @@ async function requestAssistantReply(
   let streamBuffer = "";
   let lastThinking = "";
   let lastReply = "";
+  const toolCallChunks = [];
+  let detectedToolCalls = [];
 
   const emitProgress = () => {
     if (!onProgress) return;
@@ -3666,6 +4100,12 @@ async function requestAssistantReply(
 
     const data = dataLines.map((line) => line.slice(5).trimStart()).join("\n");
     if (!data || data === "[DONE]") return;
+    try {
+      const payload = JSON.parse(data);
+      detectedToolCalls.push(...collectToolCallsFromPayload(payload, toolCallChunks));
+    } catch (error) {
+      // 非 JSON SSE 数据仍交给文本解析器处理。
+    }
     appendStructuredText(extractStreamDeltaText(data));
   };
 
@@ -3679,6 +4119,12 @@ async function requestAssistantReply(
       streamBuffer = events.pop() || "";
       events.forEach(consumeSseEvent);
     } else {
+      try {
+        const payload = JSON.parse(decoded);
+        detectedToolCalls.push(...collectToolCallsFromPayload(payload, toolCallChunks));
+      } catch (error) {
+        // 非流式 JSON 块以文本方式继续累积。
+      }
       appendStructuredText(decoded);
     }
 
@@ -3700,6 +4146,21 @@ async function requestAssistantReply(
     consumeSseEvent(streamBuffer);
   }
 
+  const finalToolCalls = [
+    ...detectedToolCalls,
+    ...finalizeStreamToolCalls(toolCallChunks),
+  ].filter((toolCall, index, all) => {
+    const key = `${toolCall.id}:${toolCall.name}:${JSON.stringify(toolCall.input || {})}`;
+    return all.findIndex((item) => `${item.id}:${item.name}:${JSON.stringify(item.input || {})}` === key) === index;
+  });
+  if (finalToolCalls.length) {
+    return handleMcpToolCalls(latestUserText, historyMessages, finalToolCalls, {
+      ...options,
+      onToolCall,
+      toolDepth,
+    });
+  }
+
   if (!rawStructuredText) {
     throw new Error("接口未返回有效内容。");
   }
@@ -3713,6 +4174,45 @@ async function requestAssistantReply(
     thinking: String(parsed.thinking || ""),
     reply: String(parsed.reply || ""),
   };
+}
+
+async function handleMcpToolCalls(latestUserText, historyMessages, toolCalls, options = {}) {
+  const toolDepth = Number(options.toolDepth || 0);
+  if (toolDepth >= 3) {
+    throw new Error("MCP 工具调用轮次过多，已停止自动执行。");
+  }
+  const calls = (Array.isArray(toolCalls) ? toolCalls : [toolCalls])
+    .map(normalizeAiToolCall)
+    .filter(Boolean);
+  if (!calls.length) {
+    throw new Error("模型返回了空的工具调用请求。");
+  }
+
+  const toolResults = [];
+  for (const call of calls) {
+    const statusText = `AI 正在尝试调用工具 [${call.name}]...`;
+    if (typeof options.onToolCall === "function") {
+      options.onToolCall(call, statusText);
+    }
+    showChatStatus(statusText, 10000);
+    toolResults.push(await executeMcpTool(call));
+  }
+
+  const extraApiMessages = [
+    ...(Array.isArray(options.extraApiMessages) ? options.extraApiMessages : []),
+    ...buildToolExchangeMessages(toolResults),
+  ];
+
+  showChatStatus("MCP 工具执行完成，正在让 AI 生成最终答复...", 10000);
+  return requestAssistantReply(latestUserText, historyMessages, {
+    ...options,
+    extraApiMessages,
+    toolDepth: toolDepth + 1,
+  });
+}
+
+async function callChatAPI(...args) {
+  return requestAssistantReply(...args);
 }
 
 function setSending(isSending) {
@@ -3751,6 +4251,11 @@ async function handleSendMessage(event) {
           partial.thinking,
           partial.reply
         );
+      },
+      onToolCall: (toolCall, statusText) => {
+        assistantMessage.content = statusText || `AI 正在尝试调用工具 [${toolCall.name}]...`;
+        assistantMessage.thinking = "";
+        renderMessages();
       },
     });
     assistantMessage.content = result.reply;
@@ -4331,6 +4836,9 @@ function bindSheetClosers() {
   document.querySelectorAll("[data-close-api]").forEach((element) => {
     element.addEventListener("click", () => closeSheet(dom.apiSheet));
   });
+  document.querySelectorAll("[data-close-mcp]").forEach((element) => {
+    element.addEventListener("click", () => closeSheet(dom.mcpSheet));
+  });
   document.querySelectorAll("[data-close-memory]").forEach((element) => {
     element.addEventListener("click", () => closeSheet(dom.memorySheet));
   });
@@ -4358,6 +4866,9 @@ function setupEvents() {
   dom.chatSettingsTrigger.addEventListener("click", () => openSheet(dom.profileSheet));
   dom.saveProfileBtn.addEventListener("click", saveProfile);
   dom.saveApiBtn.addEventListener("click", saveApiSettings);
+  dom.connectMcpBtn?.addEventListener("click", () => {
+    void fetchMcpTools();
+  });
   dom.saveBackgroundMessageBtn?.addEventListener("click", () => {
     void saveBackgroundMessageSettings();
   });
@@ -4490,6 +5001,7 @@ async function initializeApp() {
 
   renderProfile();
   renderApiForm();
+  renderMcpForm();
   renderThemeForm();
   renderBackgroundMessageForm();
   renderMessages();
@@ -4516,6 +5028,9 @@ window.initDB = initDB;
 window.saveMemory = saveMemory;
 window.retrieveMemory = retrieveMemory;
 window.cosineSimilarity = cosineSimilarity;
+window.fetchMcpTools = fetchMcpTools;
+window.executeMcpTool = executeMcpTool;
+window.callChatAPI = callChatAPI;
 
 startShaderBackground();
 initializeApp();

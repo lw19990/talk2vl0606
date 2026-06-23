@@ -737,7 +737,8 @@ button {
 }
 
 .profile-panel,
-.api-panel {
+.api-panel,
+.mcp-panel {
   background: rgba(255, 255, 255, 0.94);
   color: #141413;
   border-radius: 30px;
@@ -1309,6 +1310,56 @@ button {
   color: rgba(20, 20, 19, 0.72);
   line-height: 1.65;
   white-space: pre-wrap;
+}
+
+.mcp-status-box {
+  margin-top: 12px;
+  border-radius: 18px;
+  background: rgba(20, 20, 19, 0.05);
+  border: 1px solid rgba(20, 20, 19, 0.08);
+  padding: 12px 14px;
+  color: rgba(20, 20, 19, 0.72);
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.mcp-status-box.success {
+  background: rgba(57, 155, 92, 0.12);
+  border-color: rgba(57, 155, 92, 0.2);
+  color: #1f7b42;
+}
+
+.mcp-status-box.error {
+  background: rgba(160, 44, 44, 0.1);
+  border-color: rgba(160, 44, 44, 0.18);
+  color: #8e2f2f;
+}
+
+.mcp-tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mcp-tool-card {
+  border-radius: 18px;
+  border: 1px solid rgba(20, 20, 19, 0.08);
+  background: #fff;
+  padding: 14px;
+  box-shadow: 0 8px 18px rgba(20, 20, 19, 0.04);
+}
+
+.mcp-tool-card h5 {
+  margin: 0;
+  color: #141413;
+  font-size: 15px;
+}
+
+.mcp-tool-card p {
+  margin: 8px 0 0;
+  color: rgba(20, 20, 19, 0.62);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .background-message-actions {
