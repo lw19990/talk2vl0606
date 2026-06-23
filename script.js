@@ -24,6 +24,9 @@ const STATE_KEY = "main";
 const SHORT_TERM_TTL_MS = 72 * 60 * 60 * 1000;
 const MAX_CONTEXT_MESSAGES = 30;
 const DEFAULT_MESSAGE_DISPLAY_LIMIT = 30;
+const MESSAGE_LOAD_MORE_BATCH = 30;
+const MESSAGE_PULL_TRIGGER_PX = 72;
+const MESSAGE_PULL_MAX_PX = 108;
 const AUTO_SUMMARY_ROUNDS = 10;
 const AUTO_SUMMARY_MESSAGE_COUNT = AUTO_SUMMARY_ROUNDS * 2;
 const MEMORY_EXPORT_VERSION = "memory-palace-v1";
@@ -92,6 +95,7 @@ const dom = {
   bulkSelectCount: document.getElementById("bulk-select-count"),
   bulkCancelBtn: document.getElementById("bulk-cancel-btn"),
   bulkDeleteBtn: document.getElementById("bulk-delete-btn"),
+  messagePullIndicator: document.getElementById("message-pull-indicator"),
   chatStatus: document.getElementById("chat-status"),
   emptyTemplate: document.getElementById("empty-state-template"),
   composerForm: document.getElementById("composer-form"),
@@ -201,6 +205,14 @@ let backgroundMessageTimerId = 0;
 let backgroundMessageTriggerRunning = false;
 let backgroundMessagePendingAfterBusy = false;
 let replyRequestInFlight = false;
+let sessionExtraMessageDisplayCount = 0;
+let messagePullState = {
+  tracking: false,
+  startY: 0,
+  distance: 0,
+  ready: false,
+  loading: false,
+};
 
 const shaderCanvas = document.getElementById("shader-canvas");
 const RAIN_BACKGROUND_IMAGE =
@@ -338,6 +350,146 @@ function normalizeThemeConfig(raw = {}) {
     rainBackgroundImage: String(raw?.rainBackgroundImage || ""),
     messageDisplayLimit: normalizeMessageDisplayLimit(raw?.messageDisplayLimit),
   };
+}
+
+function getBaseMessageDisplayLimit() {
+  return normalizeMessageDisplayLimit(appState.theme?.messageDisplayLimit);
+}
+
+function getSessionMessageDisplayLimit() {
+  return getBaseMessageDisplayLimit() + Math.max(0, sessionExtraMessageDisplayCount);
+}
+
+function canLoadMoreVisibleMessages() {
+  return appState.messages.length > getSessionMessageDisplayLimit();
+}
+
+function updateMessagePullIndicator() {
+  if (!dom.messagePullIndicator || !dom.messages) return;
+  const shouldShow = messagePullState.distance > 0 || messagePullState.loading;
+  dom.messagePullIndicator.classList.toggle("visible", shouldShow);
+  dom.messagePullIndicator.classList.toggle("ready", messagePullState.ready);
+  dom.messagePullIndicator.classList.toggle("loading", messagePullState.loading);
+  dom.messagePullIndicator.setAttribute("aria-hidden", shouldShow ? "false" : "true");
+  dom.messagePullIndicator.style.height = shouldShow
+    ? `${Math.max(40, Math.round(messagePullState.distance || MESSAGE_PULL_TRIGGER_PX * 0.7))}px`
+    : "0px";
+  if (!shouldShow) {
+    dom.messagePullIndicator.textContent = "";
+    dom.messages.style.transform = "";
+    return;
+  }
+  dom.messagePullIndicator.textContent = messagePullState.loading
+    ? "正在加载更多消息..."
+    : messagePullState.ready
+      ? "松开加载更多消息"
+      : "下拉加载更多消息";
+  dom.messages.style.transform = `translateY(${Math.round(messagePullState.distance)}px)`;
+}
+
+function resetMessagePullState() {
+  messagePullState = {
+    tracking: false,
+    startY: 0,
+    distance: 0,
+    ready: false,
+    loading: false,
+  };
+  updateMessagePullIndicator();
+}
+
+function loadMoreVisibleMessages() {
+  if (!canLoadMoreVisibleMessages()) {
+    showChatStatus("已经没有更早的消息了。", 2200);
+    resetMessagePullState();
+    return false;
+  }
+  messagePullState.loading = true;
+  messagePullState.tracking = false;
+  messagePullState.ready = false;
+  messagePullState.distance = 44;
+  updateMessagePullIndicator();
+  sessionExtraMessageDisplayCount += MESSAGE_LOAD_MORE_BATCH;
+  renderMessages({ preserveScroll: true });
+  window.setTimeout(() => {
+    resetMessagePullState();
+  }, 180);
+  const visibleCount = Math.min(appState.messages.length, getSessionMessageDisplayLimit());
+  showChatStatus(`已加载更多消息，当前显示 ${visibleCount} 条。`, 2600);
+  return true;
+}
+
+function bindMessagePullToLoad() {
+  if (!dom.messages) return;
+
+  dom.messages.addEventListener(
+    "touchstart",
+    (event) => {
+      if (event.touches.length !== 1) {
+        resetMessagePullState();
+        return;
+      }
+      if (bulkDeleteMode || replyRequestInFlight || !canLoadMoreVisibleMessages()) {
+        resetMessagePullState();
+        return;
+      }
+      if (dom.messages.scrollTop > 0) {
+        resetMessagePullState();
+        return;
+      }
+      messagePullState.tracking = true;
+      messagePullState.startY = event.touches[0].clientY;
+      messagePullState.distance = 0;
+      messagePullState.ready = false;
+      messagePullState.loading = false;
+    },
+    { passive: true }
+  );
+
+  dom.messages.addEventListener(
+    "touchmove",
+    (event) => {
+      if (!messagePullState.tracking || messagePullState.loading) return;
+      if (event.touches.length !== 1) {
+        resetMessagePullState();
+        return;
+      }
+      if (dom.messages.scrollTop > 0) {
+        resetMessagePullState();
+        return;
+      }
+      const deltaY = event.touches[0].clientY - messagePullState.startY;
+      if (deltaY <= 0) {
+        messagePullState.distance = 0;
+        messagePullState.ready = false;
+        updateMessagePullIndicator();
+        return;
+      }
+      messagePullState.distance = Math.min(MESSAGE_PULL_MAX_PX, deltaY * 0.5);
+      messagePullState.ready = deltaY >= MESSAGE_PULL_TRIGGER_PX;
+      updateMessagePullIndicator();
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+    },
+    { passive: false }
+  );
+
+  const handleTouchEnd = () => {
+    if (!messagePullState.tracking && !messagePullState.loading) return;
+    if (messagePullState.loading) return;
+    if (messagePullState.ready) {
+      loadMoreVisibleMessages();
+      return;
+    }
+    resetMessagePullState();
+  };
+
+  dom.messages.addEventListener("touchend", handleTouchEnd, { passive: true });
+  dom.messages.addEventListener("touchcancel", () => {
+    if (messagePullState.loading) return;
+    resetMessagePullState();
+  }, { passive: true });
 }
 
 function normalizeBackgroundMessageConfig(raw = {}) {
@@ -2719,11 +2871,12 @@ function renderMessages(options = {}) {
   updateBulkSelectBar();
   dom.messages.innerHTML = "";
   if (!appState.messages.length) {
+    resetMessagePullState();
     dom.messages.appendChild(dom.emptyTemplate.content.cloneNode(true));
     return;
   }
 
-  const displayLimit = normalizeMessageDisplayLimit(appState.theme?.messageDisplayLimit);
+  const displayLimit = getSessionMessageDisplayLimit();
   const visibleMessages = appState.messages.slice(-displayLimit);
   const firstVisibleIndex = appState.messages.length - visibleMessages.length;
 
@@ -4199,6 +4352,7 @@ function setupEvents() {
   renderToolGrid();
   bindSheetClosers();
   bindSwipeNavigation();
+  bindMessagePullToLoad();
   updateBulkSelectBar();
 
   dom.chatSettingsTrigger.addEventListener("click", () => openSheet(dom.profileSheet));
