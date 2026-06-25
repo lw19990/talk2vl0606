@@ -8,7 +8,7 @@ function setCorsHeaders(res) {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Accept, Authorization, X-Requested-With, X-MCP-Proxy"
+    "Content-Type, Accept, Authorization, X-Requested-With, X-MCP-Proxy, Mcp-Protocol-Version"
   );
   res.setHeader("Access-Control-Max-Age", "86400");
   res.setHeader("Access-Control-Allow-Private-Network", "true");
@@ -56,12 +56,41 @@ function normalizeHeaders(headers) {
 
 function buildTargetUrl(serverUrl, path) {
   const base = String(serverUrl || "").trim().replace(/\/+$/, "");
-  const suffix = String(path || "/").startsWith("/") ? String(path || "/") : `/${path}`;
+  const rawPath = String(path || "");
+  const suffix = rawPath ? (rawPath.startsWith("/") ? rawPath : `/${rawPath}`) : "";
   const url = new URL(`${base}${suffix}`);
   if (!["http:", "https:"].includes(url.protocol)) {
     throw new Error("MCP 服务器地址只支持 http 或 https。");
   }
   return url;
+}
+
+async function readUpstreamBody(upstream) {
+  const contentType = upstream.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("text/event-stream") || !upstream.body) {
+    return upstream.text();
+  }
+
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  const deadline = Date.now() + 8000;
+
+  while (Date.now() < deadline) {
+    const timeoutMs = Math.max(1, deadline - Date.now());
+    const readResult = await Promise.race([
+      reader.read(),
+      new Promise((resolve) => setTimeout(() => resolve({ done: true, value: null }), timeoutMs)),
+    ]);
+    const { done, value } = readResult;
+    buffer += value ? decoder.decode(value, { stream: !done }) : "";
+    if (buffer.includes("\n\n") || buffer.includes("\r\n\r\n") || done) {
+      break;
+    }
+  }
+
+  await reader.cancel().catch(() => {});
+  return buffer;
 }
 
 async function proxyMcpRequest(req, res) {
@@ -70,6 +99,12 @@ async function proxyMcpRequest(req, res) {
   const method = String(payload.method || "GET").toUpperCase();
   const targetUrl = buildTargetUrl(payload.serverUrl, payload.path);
   const headers = normalizeHeaders(payload.headers);
+  if (!headers["User-Agent"] && !headers["user-agent"]) {
+    headers["User-Agent"] = "talk2vl-mcp-client/1.0";
+  }
+  if (!headers["Mcp-Protocol-Version"] && !headers["mcp-protocol-version"]) {
+    headers["Mcp-Protocol-Version"] = "2024-11-05";
+  }
   const body = method === "GET" || method === "HEAD" ? undefined : payload.body || "";
 
   const upstream = await fetch(targetUrl, {
@@ -77,7 +112,7 @@ async function proxyMcpRequest(req, res) {
     headers,
     body,
   });
-  const responseText = await upstream.text();
+  const responseText = await readUpstreamBody(upstream);
   const contentType = upstream.headers.get("content-type") || "text/plain; charset=utf-8";
 
   setCorsHeaders(res);

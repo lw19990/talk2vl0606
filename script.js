@@ -91,6 +91,8 @@ const DEFAULT_STATE = {
     headerValue: "",
     useProxy: true,
     proxyUrl: "http://localhost:8787",
+    protocol: "rest",
+    rpcUrl: "",
     tools: [],
   },
   messages: [],
@@ -357,6 +359,8 @@ function normalizeMcpConfig(raw = {}) {
     headerValue: String(raw?.headerValue || ""),
     useProxy: raw?.useProxy !== false,
     proxyUrl: String(raw?.proxyUrl || DEFAULT_STATE.mcp.proxyUrl),
+    protocol: ["jsonrpc", "sse-jsonrpc"].includes(raw?.protocol) ? raw.protocol : "rest",
+    rpcUrl: String(raw?.rpcUrl || ""),
     tools: Array.isArray(raw?.tools)
       ? raw.tools.map(normalizeMcpToolDefinition).filter(Boolean)
       : [],
@@ -971,12 +975,12 @@ function getMcpHeaderDebugLabel(headerName, headerValue) {
     : "未设置自定义请求头";
 }
 
-async function fetchMcpServer(path, options = {}, config = {}) {
+async function fetchMcpServer(path = "", options = {}, config = {}) {
   const transport = getMcpTransportConfig(config);
   if (!transport.serverUrl) {
     throw new Error("请先填写 MCP 服务器地址。");
   }
-  const targetPath = path.startsWith("/") ? path : `/${path}`;
+  const targetPath = path ? (path.startsWith("/") ? path : `/${path}`) : "";
   const method = String(options.method || "GET").toUpperCase();
   const directHeaders = getMcpRequestHeaders(options.headers || {}, transport);
 
@@ -1091,6 +1095,171 @@ function extractToolsArray(payload) {
   return [];
 }
 
+function getMcpServerPathname(serverUrl) {
+  try {
+    return new URL(serverUrl).pathname.replace(/\/+$/, "");
+  } catch (error) {
+    return "";
+  }
+}
+
+function getMcpRestToolsPath(serverUrl) {
+  return getMcpServerPathname(serverUrl).endsWith("/tools") ? "" : "/tools";
+}
+
+function getMcpRestToolCallPath(serverUrl) {
+  return getMcpServerPathname(serverUrl).endsWith("/tools") ? "/call" : "/tools/call";
+}
+
+function createMcpJsonRpcId() {
+  return `mcp_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function resolveMcpUrl(baseUrl, maybeUrl) {
+  try {
+    return new URL(String(maybeUrl || ""), String(baseUrl || "")).href.replace(/\/+$/, "");
+  } catch (error) {
+    return String(maybeUrl || "").trim().replace(/\/+$/, "");
+  }
+}
+
+function extractMcpSseEndpoint(buffer) {
+  const events = String(buffer || "").split(/\r?\n\r?\n/);
+  for (const eventBlock of events) {
+    const lines = eventBlock.split(/\r?\n/);
+    const eventName = lines
+      .find((line) => line.startsWith("event:"))
+      ?.slice(6)
+      .trim();
+    const data = lines
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim())
+      .join("\n")
+      .trim();
+    if (!data) continue;
+    if (eventName === "endpoint") return data;
+    const parsed = parseMaybeJson(data);
+    if (parsed && typeof parsed === "object") {
+      const endpoint = parsed.endpoint || parsed.url || parsed.uri;
+      if (endpoint) return String(endpoint);
+    }
+    if (/^https?:\/\//i.test(data) || data.startsWith("/")) {
+      return data;
+    }
+  }
+  return "";
+}
+
+async function discoverMcpSseRpcUrl(config = {}) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetchMcpServer("", {
+      method: "GET",
+      headers: {
+        Accept: "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Mcp-Protocol-Version": "2024-11-05",
+      },
+      signal: controller.signal,
+    }, config);
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        detail
+          ? `SSE 握手失败：${response.status}。服务器返回：${detail.slice(0, 500)}`
+          : `SSE 握手失败：${response.status}`
+      );
+    }
+    if (!response.body) {
+      const text = await response.text();
+      const endpoint = extractMcpSseEndpoint(text);
+      if (!endpoint) throw new Error("SSE 响应中没有 endpoint 事件。");
+      return resolveMcpUrl(config.serverUrl, endpoint);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += value ? decoder.decode(value, { stream: !done }) : "";
+      const endpoint = extractMcpSseEndpoint(buffer);
+      if (endpoint) {
+        await reader.cancel().catch(() => {});
+        return resolveMcpUrl(config.serverUrl, endpoint);
+      }
+      if (done) break;
+    }
+    throw new Error("SSE 响应中没有 endpoint 事件。");
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function requestMcpJsonRpc(method, params = {}, config = {}) {
+  const response = await fetchMcpServer("", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "Mcp-Protocol-Version": "2024-11-05",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: createMcpJsonRpcId(),
+      method,
+      params,
+    }),
+  }, config);
+  const contentType = response.headers.get("content-type") || "";
+  const data = contentType.includes("application/json")
+    ? await response.json()
+    : parseMcpResponseText(await response.text());
+  if (!response.ok) {
+    const detail = typeof data === "string" ? data : JSON.stringify(data);
+    throw new Error(detail || `MCP JSON-RPC 请求失败：${response.status}`);
+  }
+  if (data?.error) {
+    throw new Error(data.error.message || JSON.stringify(data.error));
+  }
+  return data?.result ?? data;
+}
+
+async function notifyMcpJsonRpc(method, params = {}, config = {}) {
+  const response = await fetchMcpServer("", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/plain",
+      "Mcp-Protocol-Version": "2024-11-05",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method,
+      params,
+    }),
+  }, config);
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || `MCP JSON-RPC 通知失败：${response.status}`);
+  }
+}
+
+async function initializeMcpJsonRpc(config = {}) {
+  await requestMcpJsonRpc("initialize", {
+    protocolVersion: "2024-11-05",
+    capabilities: {},
+    clientInfo: {
+      name: "talk2vl-web",
+      version: "1.0.0",
+    },
+  }, config);
+  await notifyMcpJsonRpc("notifications/initialized", {}, config).catch((error) => {
+    console.warn("MCP initialized 通知发送失败，继续尝试 tools/list。", error);
+  });
+}
+
 function renderMcpToolList() {
   const tools = getLoadedMcpTools();
   if (dom.mcpToolsCount) {
@@ -1189,13 +1358,20 @@ async function fetchMcpTools() {
   setMcpStatus("正在连接 MCP 服务器并同步工具清单...");
 
   try {
-    const response = await fetchMcpServer("/tools", {
+    if (getMcpServerPathname(McpServerUrl).endsWith("/sse")) {
+      throw Object.assign(new Error("SSE_ENDPOINT_DETECTED"), { useJsonRpcFallback: true });
+    }
+    const response = await fetchMcpServer(getMcpRestToolsPath(McpServerUrl), {
       method: "GET",
       headers: {
         Accept: "application/json, text/event-stream",
+        "Mcp-Protocol-Version": "2024-11-05",
       },
     }, requestConfig);
     if (!response.ok) {
+      if ([404, 405].includes(response.status)) {
+        throw Object.assign(new Error("REST_TOOLS_NOT_FOUND"), { useJsonRpcFallback: true });
+      }
       const authHint = response.status === 401
         ? `。当前请求头：${getMcpHeaderDebugLabel(headerName, headerValue)}`
         : "";
@@ -1213,6 +1389,7 @@ async function fetchMcpTools() {
       headerValue,
       useProxy,
       proxyUrl,
+      protocol: "rest",
       tools,
     });
     await writeState();
@@ -1223,6 +1400,46 @@ async function fetchMcpTools() {
     console.info(`MCP 连接成功，已加载 ${tools.length} 个工具`, tools);
     return tools;
   } catch (error) {
+    if (error?.useJsonRpcFallback) {
+      try {
+        const isSseEndpoint = getMcpServerPathname(McpServerUrl).endsWith("/sse");
+        let jsonRpcConfig = requestConfig;
+        let protocol = "jsonrpc";
+        let rpcUrl = "";
+        if (isSseEndpoint) {
+          console.info("REST /tools 返回 404，检测到 /sse 地址，开始 SSE 握手。");
+          rpcUrl = await discoverMcpSseRpcUrl(requestConfig);
+          jsonRpcConfig = { ...requestConfig, serverUrl: rpcUrl };
+          protocol = "sse-jsonrpc";
+          console.info("SSE 握手成功，JSON-RPC 消息端点：", rpcUrl);
+        } else {
+          console.info("REST /tools 返回 404，改用标准 MCP JSON-RPC tools/list。");
+        }
+        await initializeMcpJsonRpc(jsonRpcConfig);
+        const data = await requestMcpJsonRpc("tools/list", {}, jsonRpcConfig);
+        const tools = extractToolsArray(data).map(normalizeMcpToolDefinition).filter(Boolean);
+        mcpTools = tools;
+        appState.mcp = normalizeMcpConfig({
+          serverUrl: McpServerUrl,
+          headerName,
+          headerValue,
+          useProxy,
+          proxyUrl,
+          protocol,
+          rpcUrl,
+          tools,
+        });
+        await writeState();
+        window.mcpTools = mcpTools;
+        renderMcpToolList();
+        setMcpStatus(`MCP 连接成功，已通过 JSON-RPC 加载 ${tools.length} 个工具`, "success");
+        showChatStatus(`MCP 连接成功，已加载 ${tools.length} 个工具`, 3600);
+        console.info(`MCP JSON-RPC 连接成功，已加载 ${tools.length} 个工具`, tools);
+        return tools;
+      } catch (jsonRpcError) {
+        error = jsonRpcError;
+      }
+    }
     console.error("MCP 连接失败", error);
     mcpTools = [];
     appState.mcp = normalizeMcpConfig({
@@ -1295,11 +1512,31 @@ async function executeMcpTool(toolCall) {
       `正在执行 MCP 工具 [${normalizedCall.name}]，模式：${transport.useProxy ? "代理" : "直连"}，已配置请求头：`,
       getMcpHeaderDebugLabel(headerName, headerValue)
     );
-    const response = await fetchMcpServer("/tools/call", {
+    if (["jsonrpc", "sse-jsonrpc"].includes(appState.mcp?.protocol)) {
+      const rpcConfig = appState.mcp?.protocol === "sse-jsonrpc" && appState.mcp?.rpcUrl
+        ? { ...transport, serverUrl: appState.mcp.rpcUrl }
+        : transport;
+      const result = await requestMcpJsonRpc(
+        "tools/call",
+        {
+          name: normalizedCall.name,
+          arguments: normalizedCall.input || {},
+        },
+        rpcConfig
+      );
+      console.info(`MCP JSON-RPC 工具 [${normalizedCall.name}] 执行完成`, result);
+      return {
+        toolCall: normalizedCall,
+        result,
+      };
+    }
+
+    const response = await fetchMcpServer(getMcpRestToolCallPath(transport.serverUrl), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json, text/plain",
+        "Mcp-Protocol-Version": "2024-11-05",
       },
       body: JSON.stringify({
         id: normalizedCall.id,
