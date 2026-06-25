@@ -8,10 +8,11 @@ function setCorsHeaders(res) {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Accept, Authorization, X-Requested-With, X-MCP-Proxy, Mcp-Protocol-Version"
+    "Content-Type, Accept, Authorization, X-Requested-With, X-MCP-Proxy, Mcp-Protocol-Version, Mcp-Session-Id"
   );
   res.setHeader("Access-Control-Max-Age", "86400");
   res.setHeader("Access-Control-Allow-Private-Network", "true");
+  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id, X-MCP-Proxy-Target");
 }
 
 function sendJson(res, statusCode, payload) {
@@ -114,12 +115,17 @@ async function proxyMcpRequest(req, res) {
   });
   const responseText = await readUpstreamBody(upstream);
   const contentType = upstream.headers.get("content-type") || "text/plain; charset=utf-8";
+  const sessionId = upstream.headers.get("mcp-session-id");
 
   setCorsHeaders(res);
-  res.writeHead(upstream.status, {
+  const responseHeaders = {
     "Content-Type": contentType,
     "X-MCP-Proxy-Target": targetUrl.origin,
-  });
+  };
+  if (sessionId) {
+    responseHeaders["Mcp-Session-Id"] = sessionId;
+  }
+  res.writeHead(upstream.status, responseHeaders);
   res.end(responseText);
 }
 

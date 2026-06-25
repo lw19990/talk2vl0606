@@ -93,6 +93,7 @@ const DEFAULT_STATE = {
     proxyUrl: "http://localhost:8787",
     protocol: "rest",
     rpcUrl: "",
+    sessionId: "",
     tools: [],
   },
   messages: [],
@@ -361,6 +362,7 @@ function normalizeMcpConfig(raw = {}) {
     proxyUrl: String(raw?.proxyUrl || DEFAULT_STATE.mcp.proxyUrl),
     protocol: ["jsonrpc", "sse-jsonrpc"].includes(raw?.protocol) ? raw.protocol : "rest",
     rpcUrl: String(raw?.rpcUrl || ""),
+    sessionId: String(raw?.sessionId || ""),
     tools: Array.isArray(raw?.tools)
       ? raw.tools.map(normalizeMcpToolDefinition).filter(Boolean)
       : [],
@@ -945,6 +947,7 @@ function getMcpTransportConfig(override = {}) {
     proxyUrl: String(override.proxyUrl ?? dom.mcpProxyUrl?.value ?? appState.mcp?.proxyUrl ?? DEFAULT_STATE.mcp.proxyUrl)
       .trim()
       .replace(/\/+$/, ""),
+    sessionId: String(override.sessionId ?? appState.mcp?.sessionId ?? "").trim(),
   };
 }
 
@@ -959,7 +962,25 @@ function getMcpRequestHeaders(baseHeaders = {}, config = {}) {
   if (headerName && headerValue) {
     headers[headerName] = headerValue;
   }
+  const sessionId = String(config.sessionId ?? appState.mcp?.sessionId ?? "").trim();
+  if (sessionId) {
+    headers["Mcp-Session-Id"] = sessionId;
+  }
   return headers;
+}
+
+async function persistMcpSessionId(sessionId, config = {}) {
+  const value = String(sessionId || "").trim();
+  if (!value) return;
+  appState.mcp = normalizeMcpConfig({
+    ...appState.mcp,
+    sessionId: value,
+  });
+  if (config && typeof config === "object") {
+    config.sessionId = value;
+  }
+  window.McpSessionId = value;
+  await writeState().catch((error) => console.error("保存 MCP Session 失败", error));
 }
 
 function maskHeaderValue(value) {
@@ -1212,6 +1233,10 @@ async function requestMcpJsonRpc(method, params = {}, config = {}) {
       params,
     }),
   }, config);
+  const sessionId = response.headers.get("mcp-session-id");
+  if (sessionId) {
+    await persistMcpSessionId(sessionId, config);
+  }
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json")
     ? await response.json()
@@ -1247,6 +1272,13 @@ async function notifyMcpJsonRpc(method, params = {}, config = {}) {
 }
 
 async function initializeMcpJsonRpc(config = {}) {
+  appState.mcp = normalizeMcpConfig({
+    ...appState.mcp,
+    sessionId: "",
+  });
+  if (config && typeof config === "object") {
+    config.sessionId = "";
+  }
   await requestMcpJsonRpc("initialize", {
     protocolVersion: "2024-11-05",
     capabilities: {},
@@ -1344,9 +1376,10 @@ async function fetchMcpTools() {
     headerValue,
     useProxy,
     proxyUrl,
+    sessionId: "",
   });
   await writeState().catch((writeError) => console.error("保存 MCP 请求头配置失败", writeError));
-  const requestConfig = { serverUrl: McpServerUrl, headerName, headerValue, useProxy, proxyUrl };
+  const requestConfig = { serverUrl: McpServerUrl, headerName, headerValue, useProxy, proxyUrl, sessionId: "" };
   console.info(
     `正在同步 MCP 工具，模式：${useProxy ? "代理" : "直连"}，已配置请求头：`,
     getMcpHeaderDebugLabel(headerName, headerValue)
@@ -1391,6 +1424,7 @@ async function fetchMcpTools() {
       proxyUrl,
       protocol: "rest",
       tools,
+      sessionId: "",
     });
     await writeState();
     window.mcpTools = mcpTools;
@@ -1427,6 +1461,7 @@ async function fetchMcpTools() {
           proxyUrl,
           protocol,
           rpcUrl,
+          sessionId: jsonRpcConfig.sessionId || appState.mcp?.sessionId || "",
           tools,
         });
         await writeState();
