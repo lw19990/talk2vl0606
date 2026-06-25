@@ -911,14 +911,31 @@ function getMcpEndpoint(path) {
   return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
-function getMcpRequestHeaders(baseHeaders = {}) {
+function getMcpRequestHeaders(baseHeaders = {}, config = {}) {
   const headers = { ...baseHeaders };
-  const headerName = String(dom.mcpHeaderName?.value || appState.mcp?.headerName || "").trim();
-  const headerValue = String(dom.mcpHeaderValue?.value || appState.mcp?.headerValue || "").trim();
+  const headerName = String(
+    config.headerName ?? dom.mcpHeaderName?.value ?? appState.mcp?.headerName ?? ""
+  ).trim();
+  const headerValue = String(
+    config.headerValue ?? dom.mcpHeaderValue?.value ?? appState.mcp?.headerValue ?? ""
+  ).trim();
   if (headerName && headerValue) {
     headers[headerName] = headerValue;
   }
   return headers;
+}
+
+function maskHeaderValue(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (text.length <= 8) return "********";
+  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+}
+
+function getMcpHeaderDebugLabel(headerName, headerValue) {
+  return headerName && headerValue
+    ? `${headerName}: ${maskHeaderValue(headerValue)}`
+    : "未设置自定义请求头";
 }
 
 function parseMaybeJson(value) {
@@ -1068,6 +1085,23 @@ async function fetchMcpTools() {
 
   McpServerUrl = url;
   window.McpServerUrl = McpServerUrl;
+  appState.mcp = normalizeMcpConfig({
+    ...appState.mcp,
+    serverUrl: McpServerUrl,
+    headerName,
+    headerValue,
+  });
+  await writeState().catch((writeError) => console.error("保存 MCP 请求头配置失败", writeError));
+  const requestHeaders = getMcpRequestHeaders(
+    {
+      Accept: "application/json, text/event-stream",
+    },
+    { headerName, headerValue }
+  );
+  console.info(
+    "正在同步 MCP 工具，已配置请求头：",
+    getMcpHeaderDebugLabel(headerName, headerValue)
+  );
   if (dom.connectMcpBtn) {
     dom.connectMcpBtn.disabled = true;
     dom.connectMcpBtn.textContent = "同步中...";
@@ -1077,12 +1111,13 @@ async function fetchMcpTools() {
   try {
     const response = await fetch(getMcpEndpoint("/tools"), {
       method: "GET",
-      headers: getMcpRequestHeaders({
-        Accept: "application/json, text/event-stream",
-      }),
+      headers: requestHeaders,
     });
     if (!response.ok) {
-      throw new Error(`MCP 工具同步失败：${response.status}`);
+      const authHint = response.status === 401
+        ? `。当前请求头：${getMcpHeaderDebugLabel(headerName, headerValue)}`
+        : "";
+      throw new Error(`MCP 工具同步失败：${response.status}${authHint}`);
     }
     const contentType = response.headers.get("content-type") || "";
     const data = contentType.includes("application/json")
@@ -1164,12 +1199,22 @@ async function executeMcpTool(toolCall) {
   console.info(statusText, normalizedCall);
 
   try {
-    const response = await fetch(getMcpEndpoint("/tools/call"), {
-      method: "POST",
-      headers: getMcpRequestHeaders({
+    const headerName = String(dom.mcpHeaderName?.value || appState.mcp?.headerName || "").trim();
+    const headerValue = String(dom.mcpHeaderValue?.value || appState.mcp?.headerValue || "").trim();
+    const requestHeaders = getMcpRequestHeaders(
+      {
         "Content-Type": "application/json",
         Accept: "application/json, text/plain",
-      }),
+      },
+      { headerName, headerValue }
+    );
+    console.info(
+      `正在执行 MCP 工具 [${normalizedCall.name}]，已配置请求头：`,
+      getMcpHeaderDebugLabel(headerName, headerValue)
+    );
+    const response = await fetch(getMcpEndpoint("/tools/call"), {
+      method: "POST",
+      headers: requestHeaders,
       body: JSON.stringify({
         id: normalizedCall.id,
         name: normalizedCall.name,
@@ -1183,7 +1228,10 @@ async function executeMcpTool(toolCall) {
       : parseMcpResponseText(await response.text());
     if (!response.ok) {
       const detail = typeof result === "string" ? result : JSON.stringify(result);
-      throw new Error(detail || `MCP 工具执行失败：${response.status}`);
+      const authHint = response.status === 401
+        ? `。当前请求头：${getMcpHeaderDebugLabel(headerName, headerValue)}`
+        : "";
+      throw new Error(detail ? `${detail}${authHint}` : `MCP 工具执行失败：${response.status}${authHint}`);
     }
     console.info(`MCP 工具 [${normalizedCall.name}] 执行完成`, result);
     return {
