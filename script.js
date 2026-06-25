@@ -87,6 +87,8 @@ const DEFAULT_STATE = {
   },
   mcp: {
     serverUrl: "",
+    headerName: "",
+    headerValue: "",
     tools: [],
   },
   messages: [],
@@ -142,6 +144,8 @@ const dom = {
   temperatureInput: document.getElementById("temperature-input"),
   saveApiBtn: document.getElementById("save-api-btn"),
   mcpServerUrl: document.getElementById("mcp-server-url"),
+  mcpHeaderName: document.getElementById("mcp-header-name"),
+  mcpHeaderValue: document.getElementById("mcp-header-value"),
   connectMcpBtn: document.getElementById("connect-mcp-btn"),
   mcpStatus: document.getElementById("mcp-status"),
   mcpToolsCount: document.getElementById("mcp-tools-count"),
@@ -345,6 +349,8 @@ function normalizeState(raw) {
 function normalizeMcpConfig(raw = {}) {
   return {
     serverUrl: String(raw?.serverUrl || ""),
+    headerName: String(raw?.headerName || ""),
+    headerValue: String(raw?.headerValue || ""),
     tools: Array.isArray(raw?.tools)
       ? raw.tools.map(normalizeMcpToolDefinition).filter(Boolean)
       : [],
@@ -905,6 +911,16 @@ function getMcpEndpoint(path) {
   return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+function getMcpRequestHeaders(baseHeaders = {}) {
+  const headers = { ...baseHeaders };
+  const headerName = String(dom.mcpHeaderName?.value || appState.mcp?.headerName || "").trim();
+  const headerValue = String(dom.mcpHeaderValue?.value || appState.mcp?.headerValue || "").trim();
+  if (headerName && headerValue) {
+    headers[headerName] = headerValue;
+  }
+  return headers;
+}
+
 function parseMaybeJson(value) {
   if (typeof value !== "string") return value;
   const text = value.trim();
@@ -1021,6 +1037,12 @@ function renderMcpForm() {
   if (dom.mcpServerUrl) {
     dom.mcpServerUrl.value = McpServerUrl;
   }
+  if (dom.mcpHeaderName) {
+    dom.mcpHeaderName.value = appState.mcp.headerName || "";
+  }
+  if (dom.mcpHeaderValue) {
+    dom.mcpHeaderValue.value = appState.mcp.headerValue || "";
+  }
   setMcpStatus(
     mcpTools.length
       ? `MCP 已加载 ${mcpTools.length} 个工具。点击“连接/同步”可刷新工具清单。`
@@ -1031,9 +1053,16 @@ function renderMcpForm() {
 
 async function fetchMcpTools() {
   const url = String(dom.mcpServerUrl?.value || McpServerUrl || "").trim().replace(/\/+$/, "");
+  const headerName = String(dom.mcpHeaderName?.value || "").trim();
+  const headerValue = String(dom.mcpHeaderValue?.value || "").trim();
   if (!url) {
     setMcpStatus("请先填写 MCP 服务器地址。", "error");
     showChatStatus("请先填写 MCP 服务器地址。", 3200);
+    return [];
+  }
+  if ((headerName && !headerValue) || (!headerName && headerValue)) {
+    setMcpStatus("自定义请求头名称和值需要同时填写。", "error");
+    showChatStatus("自定义请求头名称和值需要同时填写。", 3200);
     return [];
   }
 
@@ -1048,9 +1077,9 @@ async function fetchMcpTools() {
   try {
     const response = await fetch(getMcpEndpoint("/tools"), {
       method: "GET",
-      headers: {
+      headers: getMcpRequestHeaders({
         Accept: "application/json, text/event-stream",
-      },
+      }),
     });
     if (!response.ok) {
       throw new Error(`MCP 工具同步失败：${response.status}`);
@@ -1063,6 +1092,8 @@ async function fetchMcpTools() {
     mcpTools = tools;
     appState.mcp = normalizeMcpConfig({
       serverUrl: McpServerUrl,
+      headerName,
+      headerValue,
       tools,
     });
     await writeState();
@@ -1078,6 +1109,8 @@ async function fetchMcpTools() {
     appState.mcp = normalizeMcpConfig({
       ...appState.mcp,
       serverUrl: McpServerUrl,
+      headerName,
+      headerValue,
       tools: [],
     });
     window.mcpTools = mcpTools;
@@ -1133,10 +1166,10 @@ async function executeMcpTool(toolCall) {
   try {
     const response = await fetch(getMcpEndpoint("/tools/call"), {
       method: "POST",
-      headers: {
+      headers: getMcpRequestHeaders({
         "Content-Type": "application/json",
         Accept: "application/json, text/plain",
-      },
+      }),
       body: JSON.stringify({
         id: normalizedCall.id,
         name: normalizedCall.name,
@@ -1860,7 +1893,7 @@ async function extractStructuredMemoriesFromMessages(messages) {
 提取目标：
 1. long_term：关于 ${selfName} 的长期事实、稳定偏好、身份背景、重要经历、长期目标
 2. schedule：关于 ${selfName} 的带明确时间节点的计划、安排、预约、事件
-3. short_term：关于 ${selfName} 的近几天内有效的即时细节、短期状态、临时事项
+3. short_term：关于 ${selfName} 的近几天内有效的带明确时间节点的即时细节、短期状态、临时事项
 4. impression：我对 ${selfName} 形成的主观印象
 
 规则：

@@ -1335,6 +1335,12 @@ button {
   color: #8e2f2f;
 }
 
+.mcp-header-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .mcp-tools-list {
   display: flex;
   flex-direction: column;
@@ -1588,6 +1594,13 @@ button {
 
   .memory-tabs {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .mcp-header-row {
+    grid-template-columns: 1fr;
+    gap: 0;
   }
 }
 
