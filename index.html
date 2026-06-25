@@ -281,6 +281,16 @@
             </label>
           </div>
 
+          <label class="inline-check">
+            <input id="mcp-use-proxy" type="checkbox" />
+            <span>使用浏览器兼容代理（解决 CORS / Failed to fetch）</span>
+          </label>
+
+          <label class="field">
+            <span>代理地址</span>
+            <input id="mcp-proxy-url" type="text" placeholder="http://localhost:8787" />
+          </label>
+
           <button class="primary-save" id="connect-mcp-btn" type="button">
             连接/同步
           </button>

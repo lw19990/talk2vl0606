@@ -1,0 +1,5 @@
+{
+  "scripts": {
+    "mcp-proxy": "node mcp-proxy.js"
+  }
+}

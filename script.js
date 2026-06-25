@@ -89,6 +89,8 @@ const DEFAULT_STATE = {
     serverUrl: "",
     headerName: "",
     headerValue: "",
+    useProxy: true,
+    proxyUrl: "http://localhost:8787",
     tools: [],
   },
   messages: [],
@@ -146,6 +148,8 @@ const dom = {
   mcpServerUrl: document.getElementById("mcp-server-url"),
   mcpHeaderName: document.getElementById("mcp-header-name"),
   mcpHeaderValue: document.getElementById("mcp-header-value"),
+  mcpUseProxy: document.getElementById("mcp-use-proxy"),
+  mcpProxyUrl: document.getElementById("mcp-proxy-url"),
   connectMcpBtn: document.getElementById("connect-mcp-btn"),
   mcpStatus: document.getElementById("mcp-status"),
   mcpToolsCount: document.getElementById("mcp-tools-count"),
@@ -351,6 +355,8 @@ function normalizeMcpConfig(raw = {}) {
     serverUrl: String(raw?.serverUrl || ""),
     headerName: String(raw?.headerName || ""),
     headerValue: String(raw?.headerValue || ""),
+    useProxy: raw?.useProxy !== false,
+    proxyUrl: String(raw?.proxyUrl || DEFAULT_STATE.mcp.proxyUrl),
     tools: Array.isArray(raw?.tools)
       ? raw.tools.map(normalizeMcpToolDefinition).filter(Boolean)
       : [],
@@ -911,6 +917,33 @@ function getMcpEndpoint(path) {
   return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+function getMcpProxyEndpoint(path = "/mcp") {
+  const proxyUrl = String(dom.mcpProxyUrl?.value || appState.mcp?.proxyUrl || DEFAULT_STATE.mcp.proxyUrl)
+    .trim()
+    .replace(/\/+$/, "");
+  if (!proxyUrl) {
+    throw new Error("请填写 MCP 代理地址，或关闭浏览器兼容代理。");
+  }
+  if (path === "/mcp" && proxyUrl.endsWith("/mcp")) {
+    return proxyUrl;
+  }
+  return `${proxyUrl}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function getMcpTransportConfig(override = {}) {
+  return {
+    serverUrl: String(override.serverUrl ?? McpServerUrl ?? appState.mcp?.serverUrl ?? "")
+      .trim()
+      .replace(/\/+$/, ""),
+    headerName: String(override.headerName ?? dom.mcpHeaderName?.value ?? appState.mcp?.headerName ?? "").trim(),
+    headerValue: String(override.headerValue ?? dom.mcpHeaderValue?.value ?? appState.mcp?.headerValue ?? "").trim(),
+    useProxy: Boolean(override.useProxy ?? dom.mcpUseProxy?.checked ?? appState.mcp?.useProxy),
+    proxyUrl: String(override.proxyUrl ?? dom.mcpProxyUrl?.value ?? appState.mcp?.proxyUrl ?? DEFAULT_STATE.mcp.proxyUrl)
+      .trim()
+      .replace(/\/+$/, ""),
+  };
+}
+
 function getMcpRequestHeaders(baseHeaders = {}, config = {}) {
   const headers = { ...baseHeaders };
   const headerName = String(
@@ -936,6 +969,43 @@ function getMcpHeaderDebugLabel(headerName, headerValue) {
   return headerName && headerValue
     ? `${headerName}: ${maskHeaderValue(headerValue)}`
     : "未设置自定义请求头";
+}
+
+async function fetchMcpServer(path, options = {}, config = {}) {
+  const transport = getMcpTransportConfig(config);
+  if (!transport.serverUrl) {
+    throw new Error("请先填写 MCP 服务器地址。");
+  }
+  const targetPath = path.startsWith("/") ? path : `/${path}`;
+  const method = String(options.method || "GET").toUpperCase();
+  const directHeaders = getMcpRequestHeaders(options.headers || {}, transport);
+
+  if (!transport.useProxy) {
+    return fetch(`${transport.serverUrl}${targetPath}`, {
+      ...options,
+      method,
+      headers: directHeaders,
+    });
+  }
+
+  if (!transport.proxyUrl) {
+    throw new Error("请填写 MCP 代理地址，或关闭浏览器兼容代理。");
+  }
+
+  return fetch(getMcpProxyEndpoint("/mcp"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/plain",
+    },
+    body: JSON.stringify({
+      serverUrl: transport.serverUrl,
+      path: targetPath,
+      method,
+      headers: directHeaders,
+      body: options.body || null,
+    }),
+  });
 }
 
 function parseMaybeJson(value) {
@@ -1060,6 +1130,12 @@ function renderMcpForm() {
   if (dom.mcpHeaderValue) {
     dom.mcpHeaderValue.value = appState.mcp.headerValue || "";
   }
+  if (dom.mcpUseProxy) {
+    dom.mcpUseProxy.checked = appState.mcp.useProxy !== false;
+  }
+  if (dom.mcpProxyUrl) {
+    dom.mcpProxyUrl.value = appState.mcp.proxyUrl || DEFAULT_STATE.mcp.proxyUrl;
+  }
   setMcpStatus(
     mcpTools.length
       ? `MCP 已加载 ${mcpTools.length} 个工具。点击“连接/同步”可刷新工具清单。`
@@ -1072,6 +1148,8 @@ async function fetchMcpTools() {
   const url = String(dom.mcpServerUrl?.value || McpServerUrl || "").trim().replace(/\/+$/, "");
   const headerName = String(dom.mcpHeaderName?.value || "").trim();
   const headerValue = String(dom.mcpHeaderValue?.value || "").trim();
+  const useProxy = Boolean(dom.mcpUseProxy?.checked);
+  const proxyUrl = String(dom.mcpProxyUrl?.value || DEFAULT_STATE.mcp.proxyUrl).trim().replace(/\/+$/, "");
   if (!url) {
     setMcpStatus("请先填写 MCP 服务器地址。", "error");
     showChatStatus("请先填写 MCP 服务器地址。", 3200);
@@ -1082,6 +1160,11 @@ async function fetchMcpTools() {
     showChatStatus("自定义请求头名称和值需要同时填写。", 3200);
     return [];
   }
+  if (useProxy && !proxyUrl) {
+    setMcpStatus("请填写 MCP 代理地址，或关闭浏览器兼容代理。", "error");
+    showChatStatus("请填写 MCP 代理地址，或关闭浏览器兼容代理。", 3200);
+    return [];
+  }
 
   McpServerUrl = url;
   window.McpServerUrl = McpServerUrl;
@@ -1090,16 +1173,13 @@ async function fetchMcpTools() {
     serverUrl: McpServerUrl,
     headerName,
     headerValue,
+    useProxy,
+    proxyUrl,
   });
   await writeState().catch((writeError) => console.error("保存 MCP 请求头配置失败", writeError));
-  const requestHeaders = getMcpRequestHeaders(
-    {
-      Accept: "application/json, text/event-stream",
-    },
-    { headerName, headerValue }
-  );
+  const requestConfig = { serverUrl: McpServerUrl, headerName, headerValue, useProxy, proxyUrl };
   console.info(
-    "正在同步 MCP 工具，已配置请求头：",
+    `正在同步 MCP 工具，模式：${useProxy ? "代理" : "直连"}，已配置请求头：`,
     getMcpHeaderDebugLabel(headerName, headerValue)
   );
   if (dom.connectMcpBtn) {
@@ -1109,10 +1189,12 @@ async function fetchMcpTools() {
   setMcpStatus("正在连接 MCP 服务器并同步工具清单...");
 
   try {
-    const response = await fetch(getMcpEndpoint("/tools"), {
+    const response = await fetchMcpServer("/tools", {
       method: "GET",
-      headers: requestHeaders,
-    });
+      headers: {
+        Accept: "application/json, text/event-stream",
+      },
+    }, requestConfig);
     if (!response.ok) {
       const authHint = response.status === 401
         ? `。当前请求头：${getMcpHeaderDebugLabel(headerName, headerValue)}`
@@ -1129,6 +1211,8 @@ async function fetchMcpTools() {
       serverUrl: McpServerUrl,
       headerName,
       headerValue,
+      useProxy,
+      proxyUrl,
       tools,
     });
     await writeState();
@@ -1146,12 +1230,17 @@ async function fetchMcpTools() {
       serverUrl: McpServerUrl,
       headerName,
       headerValue,
+      useProxy,
+      proxyUrl,
       tools: [],
     });
     window.mcpTools = mcpTools;
     await writeState().catch((writeError) => console.error("保存 MCP 状态失败", writeError));
     renderMcpToolList();
-    const message = `MCP 连接失败：${error.message || "未知错误"}`;
+    const failedFetchHint = error instanceof TypeError
+      ? "。这通常是浏览器 CORS / Private Network Access 拦截，请确认本项目自带代理已启动并开启“使用浏览器兼容代理”。"
+      : "";
+    const message = `MCP 连接失败：${error.message || "未知错误"}${failedFetchHint}`;
     setMcpStatus(message, "error");
     showChatStatus(message, 4200);
     return [];
@@ -1199,29 +1288,26 @@ async function executeMcpTool(toolCall) {
   console.info(statusText, normalizedCall);
 
   try {
-    const headerName = String(dom.mcpHeaderName?.value || appState.mcp?.headerName || "").trim();
-    const headerValue = String(dom.mcpHeaderValue?.value || appState.mcp?.headerValue || "").trim();
-    const requestHeaders = getMcpRequestHeaders(
-      {
+    const transport = getMcpTransportConfig();
+    const headerName = transport.headerName;
+    const headerValue = transport.headerValue;
+    console.info(
+      `正在执行 MCP 工具 [${normalizedCall.name}]，模式：${transport.useProxy ? "代理" : "直连"}，已配置请求头：`,
+      getMcpHeaderDebugLabel(headerName, headerValue)
+    );
+    const response = await fetchMcpServer("/tools/call", {
+      method: "POST",
+      headers: {
         "Content-Type": "application/json",
         Accept: "application/json, text/plain",
       },
-      { headerName, headerValue }
-    );
-    console.info(
-      `正在执行 MCP 工具 [${normalizedCall.name}]，已配置请求头：`,
-      getMcpHeaderDebugLabel(headerName, headerValue)
-    );
-    const response = await fetch(getMcpEndpoint("/tools/call"), {
-      method: "POST",
-      headers: requestHeaders,
       body: JSON.stringify({
         id: normalizedCall.id,
         name: normalizedCall.name,
         input: normalizedCall.input,
         arguments: normalizedCall.input,
       }),
-    });
+    }, transport);
     const contentType = response.headers.get("content-type") || "";
     const result = contentType.includes("application/json")
       ? await response.json()
@@ -1240,12 +1326,15 @@ async function executeMcpTool(toolCall) {
     };
   } catch (error) {
     console.error(`MCP 工具 [${normalizedCall.name}] 执行失败`, error);
-    showChatStatus(`MCP 工具执行失败：${error.message || "未知错误"}`, 5200);
+    const failedFetchHint = error instanceof TypeError
+      ? "。这通常是浏览器 CORS / Private Network Access 拦截，请确认本项目自带代理已启动并开启“使用浏览器兼容代理”。"
+      : "";
+    showChatStatus(`MCP 工具执行失败：${error.message || "未知错误"}${failedFetchHint}`, 5200);
     return {
       toolCall: normalizedCall,
       result: {
         error: true,
-        message: error.message || "未知错误",
+        message: `${error.message || "未知错误"}${failedFetchHint}`,
       },
     };
   }
