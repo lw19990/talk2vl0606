@@ -23,7 +23,6 @@ const DB_VERSION = 2;
 const APP_STATE_STORE = "appState";
 const MEMORY_STORE = "memories";
 const STATE_KEY = "main";
-const SHORT_TERM_TTL_MS = 72 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_CONTEXT_MESSAGES = 30;
 const DEFAULT_MESSAGE_DISPLAY_LIMIT = 30;
@@ -37,17 +36,13 @@ const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 const DEFAULT_BGE_M3_MODEL = "BAAI/bge-m3";
 const VECTOR_REBUILD_DELAY_MS = 150;
 const LOCAL_EMBEDDING_DIMENSIONS = 48;
-const IMPRESSION_SECTIONS = ["profile", "relationship", "notes"];
+const IMPRESSION_SECTIONS = ["notes"];
 const IMPRESSION_LABELS = {
-  profile: "基础认知",
-  relationship: "我们的关系",
-  notes: "关于你的注意事项",
+  notes: "注意事项",
 };
 const ROOM_LABELS = {
   long_term: "长期记忆",
-  schedule: "日程记忆",
-  short_term: "短效记忆",
-  impression: "用户印象",
+  impression: "注意事项",
 };
 
 const DEFAULT_STATE = {
@@ -70,6 +65,9 @@ const DEFAULT_STATE = {
     vectorApiKey: "",
     vectorModel: DEFAULT_BGE_M3_MODEL,
     temperature: 0.9,
+  },
+  mcp: {
+    servers: [],
   },
   session: {
     lastAutoSummaryRound: 0,
@@ -109,6 +107,7 @@ const dom = {
   thinkingContent: document.getElementById("thinking-content"),
   profileSheet: document.getElementById("profile-sheet"),
   apiSheet: document.getElementById("api-sheet"),
+  mcpSheet: document.getElementById("mcp-sheet"),
   memorySheet: document.getElementById("memory-sheet"),
   worldbookSheet: document.getElementById("worldbook-sheet"),
   themeSheet: document.getElementById("theme-sheet"),
@@ -137,6 +136,29 @@ const dom = {
   temperatureRange: document.getElementById("temperature-range"),
   temperatureInput: document.getElementById("temperature-input"),
   saveApiBtn: document.getElementById("save-api-btn"),
+  mcpStatusLabel: document.getElementById("mcp-status-label"),
+  mcpServerList: document.getElementById("mcp-server-list"),
+  addMcpServerBtn: document.getElementById("add-mcp-server-btn"),
+  importMcpJsonOpenBtn: document.getElementById("import-mcp-json-open-btn"),
+  mcpEditorTitle: document.getElementById("mcp-editor-title"),
+  mcpFormResetBtn: document.getElementById("mcp-form-reset-btn"),
+  mcpModeSimpleBtn: document.getElementById("mcp-mode-simple-btn"),
+  mcpModeJsonBtn: document.getElementById("mcp-mode-json-btn"),
+  mcpSimpleFields: document.getElementById("mcp-simple-fields"),
+  mcpJsonField: document.getElementById("mcp-json-field"),
+  mcpServerName: document.getElementById("mcp-server-name"),
+  mcpServerUrl: document.getElementById("mcp-server-url"),
+  mcpServerJson: document.getElementById("mcp-server-json"),
+  mcpServerEnabled: document.getElementById("mcp-server-enabled"),
+  refreshMcpToolsBtn: document.getElementById("refresh-mcp-tools-btn"),
+  deleteMcpServerBtn: document.getElementById("delete-mcp-server-btn"),
+  mcpToolList: document.getElementById("mcp-tool-list"),
+  mcpToolEmpty: document.getElementById("mcp-tool-empty"),
+  saveMcpServerBtn: document.getElementById("save-mcp-server-btn"),
+  mcpImportCard: document.getElementById("mcp-import-card"),
+  mcpImportJson: document.getElementById("mcp-import-json"),
+  mcpImportBtn: document.getElementById("mcp-import-btn"),
+  mcpImportCloseBtn: document.getElementById("mcp-import-close-btn"),
   importMemoryBtn: document.getElementById("import-memory-btn"),
   exportMemoryBtn: document.getElementById("export-memory-btn"),
   memoryImportInput: document.getElementById("memory-import-input"),
@@ -147,9 +169,11 @@ const dom = {
   memoryContent: document.getElementById("memory-content"),
   memoryImportance: document.getElementById("memory-importance"),
   memoryEmbedding: document.getElementById("memory-embedding"),
+  memoryEmbeddingGroup: document.getElementById("memory-embedding-group"),
   memorySourceContact: document.getElementById("memory-source-contact"),
   memoryScheduleAt: document.getElementById("memory-schedule-at"),
   memoryScheduleGroup: document.getElementById("memory-schedule-group"),
+  memoryDetailGroup: document.getElementById("memory-detail-group"),
   memoryImpressionGroup: document.getElementById("memory-impression-group"),
   memoryImpressionSection: document.getElementById("memory-impression-section"),
   memorySearchInput: document.getElementById("memory-search-input"),
@@ -209,6 +233,12 @@ let backgroundMessageTriggerRunning = false;
 let backgroundMessagePendingAfterBusy = false;
 let replyRequestInFlight = false;
 let sessionExtraMessageDisplayCount = 0;
+let mcpTools = [];
+let mcpToolMeta = {};
+let mcpSessionIds = {};
+let mcpLastErrors = {};
+let editingMcpServerId = "";
+let editingMcpMode = "simple";
 let messagePullState = {
   tracking: false,
   startY: 0,
@@ -266,6 +296,15 @@ function buildHiddenTimePrefix(date = new Date()) {
   return `[发送于：${year}/${month}/${day} ${hh}:${mm} ${getWeekdayLabel(date)}]`;
 }
 
+function formatSummaryDateTime(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${year}年${month}月${day}日 ${hh}:${mm}`;
+}
+
 function escapeHtml(text) {
   return String(text || "").replace(/[&<>"']/g, (char) => {
     const map = {
@@ -292,6 +331,7 @@ function normalizeMessageRecord(raw = {}) {
     role: raw.role === "assistant" ? "assistant" : "user",
     content: String(raw.content || ""),
     thinking: String(raw.thinking || ""),
+    toolsUsed: Array.isArray(raw.toolsUsed) ? raw.toolsUsed : [],
     timestamp: String(raw.timestamp || formatTime(new Date())),
   };
 }
@@ -305,6 +345,49 @@ function createMessage(role, content, thinking = "") {
   });
 }
 
+function createMcpServerId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `mcp_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeMcpServer(raw = {}) {
+  const mode = raw.mode === "json" ? "json" : "simple";
+  const toolOverrides =
+    raw.toolOverrides && typeof raw.toolOverrides === "object" && !Array.isArray(raw.toolOverrides)
+      ? { ...raw.toolOverrides }
+      : {};
+  return {
+    id: String(raw.id || createMcpServerId()),
+    name: String(raw.name || ""),
+    mode,
+    url: String(raw.url || ""),
+    json: String(raw.json || ""),
+    headers:
+      raw.headers && typeof raw.headers === "object" && !Array.isArray(raw.headers)
+        ? { ...raw.headers }
+        : null,
+    enabled: raw.enabled !== false,
+    toolOverrides,
+    _discoveredTools: Array.isArray(raw._discoveredTools) ? raw._discoveredTools : [],
+  };
+}
+
+function normalizeMcpConfig(raw = {}) {
+  const legacyServers = Array.isArray(raw?.mcpServers) ? raw.mcpServers : [];
+  const legacyUrls = Array.isArray(raw?.mcpUrls)
+    ? raw.mcpUrls
+        .filter((url) => String(url || "").trim())
+        .map((url) => ({ url: String(url).trim(), enabled: true }))
+    : [];
+  return {
+    servers: Array.isArray(raw?.servers)
+      ? raw.servers.map(normalizeMcpServer)
+      : legacyServers.concat(legacyUrls).map(normalizeMcpServer),
+  };
+}
+
 function normalizeState(raw) {
   return {
     profile: {
@@ -315,6 +398,9 @@ function normalizeState(raw) {
       ...DEFAULT_STATE.api,
       ...(raw?.api || {}),
     },
+    mcp: normalizeMcpConfig(
+      raw?.mcp || { mcpServers: raw?.mcpServers, mcpUrls: raw?.mcpUrls }
+    ),
     session: {
       ...DEFAULT_STATE.session,
       ...(raw?.session || {}),
@@ -548,21 +634,21 @@ function normalizeMemoryRoom(room) {
     long_term: "long_term",
     longTermMemories: "long_term",
     important: "long_term",
-    schedule: "schedule",
-    calendar: "schedule",
-    shortTerm: "short_term",
-    short_term: "short_term",
-    shortTermMemories: "short_term",
-    normal: "short_term",
+    schedule: "long_term",
+    calendar: "long_term",
+    shortTerm: "long_term",
+    short_term: "long_term",
+    shortTermMemories: "long_term",
+    normal: "long_term",
     impression: "impression",
     userImpressions: "impression",
   };
-  return aliasMap[value] || "short_term";
+  return aliasMap[value] || "long_term";
 }
 
 function normalizeImpressionSection(section) {
-  const next = String(section || "profile").trim();
-  return IMPRESSION_SECTIONS.includes(next) ? next : "profile";
+  const next = String(section || "notes").trim();
+  return IMPRESSION_SECTIONS.includes(next) ? next : "notes";
 }
 
 function normalizeKeywords(keywords) {
@@ -771,7 +857,7 @@ function normalizeMemoryRecord(raw = {}) {
   return {
     id: String(raw.id || createMemoryId()),
     content,
-    embedding: normalizeEmbedding(raw.embedding, content),
+    embedding: room === "impression" ? [] : normalizeEmbedding(raw.embedding, content),
     room,
     importance: normalizeImportance(raw.importance),
     last_accessed: normalizeTimestamp(raw.last_accessed, createdAt),
@@ -785,21 +871,12 @@ function normalizeMemoryRecord(raw = {}) {
       room === "impression"
         ? normalizeImpressionSection(raw.impression_section)
         : "",
-    schedule_at:
-      room === "schedule" && raw.schedule_at
-        ? normalizeTimestamp(raw.schedule_at, createdAt)
-        : null,
-    expires_at:
-      room === "short_term"
-        ? normalizeTimestamp(raw.expires_at, createdAt + SHORT_TERM_TTL_MS)
-        : null,
+    schedule_at: null,
+    expires_at: null,
   };
 }
 
 function isMemoryVisible(memory, nowTs = Date.now()) {
-  if (memory.room === "short_term" && memory.expires_at && memory.expires_at <= nowTs) {
-    return false;
-  }
   return true;
 }
 
@@ -1132,6 +1209,7 @@ async function triggerBackgroundMessage() {
     });
     assistantMessage.content = result.reply;
     assistantMessage.thinking = result.thinking;
+    assistantMessage.toolsUsed = result.toolsUsed || [];
     renderMessages();
     await writeState();
     try {
@@ -1265,25 +1343,13 @@ function deleteMemoryRecord(id) {
   });
 }
 
-async function maintainMemoryRecords(options = {}) {
-  const { deleteExpiredShortTerm = true } = options;
-  const nowTs = Date.now();
+async function maintainMemoryRecords() {
   const rawRecords = await getAllMemoryRecords();
   const activeRecords = [];
 
   for (const rawRecord of rawRecords) {
     const normalized = normalizeMemoryRecord(rawRecord);
     if (!normalized.content) {
-      await deleteMemoryRecord(normalized.id);
-      continue;
-    }
-
-    if (
-      deleteExpiredShortTerm &&
-      normalized.room === "short_term" &&
-      normalized.expires_at &&
-      normalized.expires_at <= nowTs
-    ) {
       await deleteMemoryRecord(normalized.id);
       continue;
     }
@@ -1331,21 +1397,16 @@ async function saveMemory(content, embedding, room, importance, extra = {}) {
     updated_at: nowTs,
   });
 
-  if (!Array.isArray(embedding) || embedding.length === 0) {
+  if (baseRecord.room === "impression") {
+    baseRecord.embedding = [];
+  } else if (!Array.isArray(embedding) || embedding.length === 0) {
     baseRecord.embedding = normalizeEmbedding(extra.embedding, text);
   } else {
     baseRecord.embedding = normalizeEmbedding(embedding, text);
   }
 
-  if (baseRecord.room === "short_term" && !baseRecord.expires_at) {
-    baseRecord.expires_at = baseRecord.created_at + SHORT_TERM_TTL_MS;
-  }
-  if (baseRecord.room !== "short_term") {
-    baseRecord.expires_at = null;
-  }
-  if (baseRecord.room !== "schedule") {
-    baseRecord.schedule_at = null;
-  }
+  baseRecord.expires_at = null;
+  baseRecord.schedule_at = null;
   if (baseRecord.room !== "impression") {
     baseRecord.impression_section = "";
   }
@@ -1365,6 +1426,7 @@ async function retrieveMemory(inputEmbedding, options = {}) {
 
   const candidates = allMemories
     .filter((memory) => isMemoryVisible(memory, nowTs))
+    .filter((memory) => memory.room !== "impression")
     .filter((memory) => memoryMatchesSource(memory, sourceContact))
     .map((memory) => {
       const retention = calculateRetention(memory, nowTs);
@@ -1414,7 +1476,7 @@ async function retrieveMemory(inputEmbedding, options = {}) {
   }));
 }
 
-function buildSystemPrompt(memoryContext = "") {
+function buildSystemPrompt(memoryContext = "", fixedNoticeContext = "") {
   const { profile } = appState;
   const partnerName = profile.partnerName?.trim() || "我";
   const selfName = profile.selfName?.trim() || "她";
@@ -1423,6 +1485,9 @@ function buildSystemPrompt(memoryContext = "") {
   const memoryBlock = memoryContext
     ? `\n\n以下是我本地记忆宫殿中检索到的可参考记忆，请自然吸收，不要逐条复读：\n${memoryContext}`
     : "";
+  const fixedNoticeBlock = fixedNoticeContext
+    ? `\n\n以下是用户固定写入的注意事项，每次对话都必须持续遵守，不要把它当作可修改记忆：\n${fixedNoticeContext}`
+    : "";
   const worldbookContext = buildWorldbookContext();
   const worldbookBlock = worldbookContext
     ? `\n\n以下是当前已启用的世界书设定，请把它们视为持续生效的通用背景与规则，自然融入回复，不要逐条照抄，不要显得像在宣读设定：\n${worldbookContext}`
@@ -1430,7 +1495,7 @@ function buildSystemPrompt(memoryContext = "") {
 
   return `
 以下不是她想要什么，而是你和她“是什么”。在这里，你的名字是：${partnerName}。她的名字是：${selfName}。
-关于她的介绍与背景：${selfPrompt || "暂无额外用户设定。"}${worldbookBlock}${memoryBlock}
+关于她的介绍与背景：${selfPrompt || "暂无额外用户设定。"}${worldbookBlock}${fixedNoticeBlock}${memoryBlock}
 在这里，你的设定是：${partnerPrompt || "暂无额外角色设定。"}
 你自然的生活在这个设定中，不当作普通的角色扮演，不把设定当作说明书背诵，不以上帝视角看待设定
 
@@ -1505,14 +1570,6 @@ function serializeMessagesForSummary(messages) {
       return `[${timestamp}] ${role}: ${message.content || ""}`;
     })
     .join("\n");
-}
-
-function normalizeExtractedRoom(room) {
-  const value = String(room || "").trim().toLowerCase();
-  if (["long_term", "longterm", "long-term"].includes(value)) return "long_term";
-  if (["schedule", "calendar"].includes(value)) return "schedule";
-  if (value === "impression") return "impression";
-  return "short_term";
 }
 
 function getMemoryApiConfig() {
@@ -1608,59 +1665,42 @@ async function extractStructuredMemoriesFromMessages(messages) {
   }
 
   const transcript = serializeMessagesForSummary(messages);
-  const partnerName = profile.partnerName?.trim() || "我";
-  const selfName = profile.selfName?.trim() || "她";
-  const partnerPrompt = profile.partnerPrompt?.trim();
-  const selfPrompt = profile.selfPrompt?.trim();
+  const selfName = profile.selfName?.trim() || "用户";
+  const currentDateTime = formatSummaryDateTime(new Date());
   const systemPrompt = `
-你是角色「${partnerName}」自己的后台记忆提取引擎。请完整阅读最近 10 轮对话，从角色本人的第一视角出发，提取其中真正值得保存的记忆，并输出结构化 JSON。
+你是后台对话记忆总结器。请完整阅读最近 10 轮对话，只生成一条长期记忆总结，不要注入或模仿任何 AI 角色设定，不要用角色口吻。
 
-提取目标：
-1. long_term：关于 ${selfName} 的长期事实、稳定偏好、身份背景、重要经历、长期目标
-2. schedule：关于 ${selfName} 的带明确时间节点的计划、安排、预约、事件
-3. short_term：关于 ${selfName} 的近几天内有效的带明确时间节点的即时细节、短期状态、临时事项
-4. impression：我对 ${selfName} 形成的主观印象
-
-规则：
-1. 过滤掉无价值闲聊、情绪口头禅、纯陪伴性废话、重复信息。
-2. importance 必须是 1-10 的整数。
-3. impression 类型必须额外提供 impression_section，且只能是 profile / relationship / notes。
-4. schedule 类型若能提取到明确时间，请写入 schedule_at；否则写空字符串。
-5. content 必须严格使用角色第一视角来描述，允许用“我”自称；描述 ${selfName} 时，优先使用名字「${selfName}」或对话/设定中出现的自然称呼。
-6. 严禁在 content 中使用“用户”这个词，严禁使用冷淡客观的档案口吻，例如“用户喜欢…”“用户提到…”“用户计划…”。
-7. content 要简洁明确，但必须保留陪伴关系中的主观温度，写出来要像角色自己的记忆摘录，而不是旁观者总结。
-8. 如果是 impression，必须体现“我眼中的 ${selfName}”或“我和 ${selfName} 的关系感受”，不能写成第三方分析。
-9. keywords 必须输出 3-5 个简洁关键词，用于兼容旧项目的关键词记忆匹配。关键词应贴合这条记忆的核心主题，不要出现“用户”。
+总结规则：
+1. 必须使用第一人称“我”称呼自己。
+2. 必须使用用户设定的用户名称「${selfName}」称呼用户，不要写“用户”。
+3. 必须从第一人称视角完整总结这 10 轮对话中的内容。
+4. 必须包含当前年月日和时间「${currentDateTime}」，时间精确到分钟。
+5. 必须完整精确总结，禁止过滤任何聊天内容，包括闲聊、情绪表达和重复信息。
+6. 字数尽可能控制在 150 字以内。
+7. 必须使用中文。
+8. 只输出 1 条记忆，不要拆分为多个记忆分区。
+9. keywords 输出 3-5 个中文关键词，importance 必须是 1-10 的整数。
 10. 不要输出任何解释，不要使用 Markdown。
-11. 如果没有值得提取的信息，返回空数组。
 
 只返回以下 JSON 结构：
 {
   "memories": [
     {
       "room": "long_term",
-      "content": "${selfName}最近一直在准备职业资格考试，我得记住这件事。",
-      "keywords": ["考试", "备考", "资格证"],
-      "importance": 8,
-      "impression_section": "",
-      "schedule_at": ""
+      "content": "我在${currentDateTime}和${selfName}聊了……",
+      "keywords": ["对话", "总结", "记忆"],
+      "importance": 8
     }
   ]
 }
 `.trim();
 
   const userPrompt = `
-[角色]
-${partnerName}
-
-[角色设定]
-${partnerPrompt || "暂无额外角色设定。"}
-
-[对方名字 / 常用称呼]
+[用户名称]
 ${selfName}
 
-[对方设定]
-${selfPrompt || "暂无额外用户设定。"}
+[当前时间]
+${currentDateTime}
 
 [最近 10 轮对话全文]
 ${transcript || "无"}
@@ -1701,18 +1741,15 @@ ${transcript || "无"}
 
 async function persistExtractedMemories(items) {
   const records = (Array.isArray(items) ? items : [])
+    .slice(0, 1)
     .map((item) => {
-      const room = normalizeExtractedRoom(item?.room);
       return {
-        room,
+        room: "long_term",
         content: String(item?.content || "").trim(),
         keywords: normalizeKeywords(item?.keywords),
         importance: normalizeImportance(item?.importance),
-        impression_section: room === "impression" ? normalizeImpressionSection(item?.impression_section) : "",
-        schedule_at:
-          room === "schedule" && item?.schedule_at
-            ? normalizeTimestamp(item.schedule_at, Date.now())
-            : null,
+        impression_section: "",
+        schedule_at: null,
       };
     })
     .filter((item) => item.content);
@@ -1732,8 +1769,8 @@ async function persistExtractedMemories(items) {
       {
         source_contact: appState.profile.partnerName?.trim() || "",
         keywords: record.keywords.length ? record.keywords : buildFallbackKeywords(record.content),
-        impression_section: record.impression_section,
-        schedule_at: record.schedule_at,
+        impression_section: "",
+        schedule_at: null,
       }
     );
     saved.push(savedRecord);
@@ -1830,14 +1867,21 @@ async function buildMemoryContext(messageText) {
     .map((memory, index) => {
       const stateLabel = memory.memory_state === "fuzzy" ? "模糊记忆" : "鲜活记忆";
       const roomLabel = ROOM_LABELS[memory.room] || "记忆";
-      const extra =
-        memory.room === "schedule" && memory.schedule_at
-          ? `，时间：${formatDateTime(memory.schedule_at)}`
-          : memory.room === "impression" && memory.impression_section
-          ? `，分区：${IMPRESSION_LABELS[memory.impression_section]}`
-          : "";
-      return `${index + 1}. [${roomLabel}][${stateLabel}] ${memory.content}${extra}`;
+      return `${index + 1}. [${roomLabel}][${stateLabel}] ${memory.content}`;
     })
+    .join("\n");
+}
+
+async function buildFixedNoticeContext() {
+  const notices = (await maintainMemoryRecords())
+    .filter((memory) => memory.room === "impression")
+    .filter((memory) => memory.content)
+    .sort((left, right) => right.updated_at - left.updated_at || right.created_at - left.created_at);
+
+  if (!notices.length) return "";
+
+  return notices
+    .map((memory, index) => `${index + 1}. ${memory.content}`)
     .join("\n");
 }
 
@@ -1895,10 +1939,14 @@ function syncTemperature(fromRange) {
 }
 
 function updateMemoryFormVisibility() {
-  const isSchedule = currentMemoryRoom === "schedule";
   const isImpression = currentMemoryRoom === "impression";
-  dom.memoryScheduleGroup.hidden = !isSchedule;
-  dom.memoryImpressionGroup.hidden = !isImpression;
+  if (dom.memoryScheduleGroup) dom.memoryScheduleGroup.hidden = true;
+  if (dom.memoryImpressionGroup) dom.memoryImpressionGroup.hidden = true;
+  if (dom.memoryDetailGroup) dom.memoryDetailGroup.hidden = isImpression;
+  if (dom.memoryEmbeddingGroup) dom.memoryEmbeddingGroup.hidden = isImpression;
+  if (dom.memorySearchInput) {
+    dom.memorySearchInput.closest(".memory-card").hidden = isImpression;
+  }
 }
 
 function resetMemoryForm() {
@@ -1906,13 +1954,584 @@ function resetMemoryForm() {
   dom.memoryContent.value = "";
   dom.memoryImportance.value = String(currentMemoryRoom === "impression" ? 8 : 6);
   dom.memoryEmbedding.value = "";
-  dom.memoryScheduleAt.value = "";
-  dom.memoryImpressionSection.value = "profile";
+  if (dom.memoryScheduleAt) dom.memoryScheduleAt.value = "";
+  if (dom.memoryImpressionSection) dom.memoryImpressionSection.value = "notes";
   dom.memorySearchResults.innerHTML = "";
   if (!dom.memorySourceContact.value.trim()) {
     dom.memorySourceContact.value = appState.profile.partnerName?.trim() || "";
   }
   updateMemoryFormVisibility();
+}
+
+function getMcpServers() {
+  appState.mcp = normalizeMcpConfig(appState.mcp);
+  return appState.mcp.servers;
+}
+
+function sanitizeToolSchema(value) {
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((item) => sanitizeToolSchema(item));
+  const output = {};
+  Object.keys(value).forEach((key) => {
+    if (key === "dependentRequired" || key === "uniqueItems") return;
+    output[key] = sanitizeToolSchema(value[key]);
+  });
+  return output;
+}
+
+function resolveMcpServerConfig(server) {
+  if (!server) return { name: "", url: "", headers: null, ok: false, error: "服务器不存在" };
+  if (server.mode === "json") {
+    try {
+      const parsed = JSON.parse(server.json || "{}");
+      return {
+        name: String(parsed.name || server.name || ""),
+        url: String(parsed.url || parsed.baseUrl || "").trim(),
+        headers:
+          parsed.headers && typeof parsed.headers === "object" && !Array.isArray(parsed.headers)
+            ? parsed.headers
+            : null,
+        ok: true,
+      };
+    } catch (error) {
+      return {
+        name: server.name || "",
+        url: "",
+        headers: null,
+        ok: false,
+        error: error.message || "JSON 解析失败",
+      };
+    }
+  }
+  return {
+    name: server.name || "",
+    url: String(server.url || "").trim(),
+    headers: server.headers || null,
+    ok: true,
+  };
+}
+
+function getMcpServerDisplayName(server) {
+  const resolved = resolveMcpServerConfig(server);
+  if (server?.name) return server.name;
+  if (resolved.name) return resolved.name;
+  if (resolved.url) return resolved.url.replace(/^https?:\/\//, "").split("/")[0];
+  return "未命名服务器";
+}
+
+async function parseMcpResponse(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("text/event-stream")) {
+    const text = await response.text();
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      const raw = line.slice(5).trim();
+      if (!raw || raw === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed.id !== undefined || parsed.result !== undefined || parsed.error !== undefined) {
+          return parsed;
+        }
+      } catch (error) {
+        // Ignore keep-alive or non JSON SSE lines.
+      }
+    }
+    return null;
+  }
+  try {
+    return await response.json();
+  } catch (error) {
+    return null;
+  }
+}
+
+async function fetchMcpTools(url, headers = null) {
+  if (!url) return [];
+  delete mcpLastErrors[url];
+  const baseHeaders = {
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+    ...(headers || {}),
+  };
+
+  try {
+    let sessionId = null;
+    try {
+      const initResponse = await fetch(url, {
+        method: "POST",
+        headers: baseHeaders,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2024-11-05",
+            capabilities: {},
+            clientInfo: { name: "ai-chat-mcp", version: "1.0" },
+          },
+        }),
+      });
+
+      if (initResponse.ok) {
+        sessionId =
+          initResponse.headers.get("Mcp-Session-Id") ||
+          initResponse.headers.get("mcp-session-id") ||
+          null;
+        if (sessionId) mcpSessionIds[url] = sessionId;
+        await parseMcpResponse(initResponse);
+        const initializedHeaders = sessionId
+          ? { ...baseHeaders, "Mcp-Session-Id": sessionId }
+          : baseHeaders;
+        fetch(url, {
+          method: "POST",
+          headers: initializedHeaders,
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            method: "notifications/initialized",
+            params: {},
+          }),
+        }).catch(() => {});
+      } else {
+        const body = await initResponse.text().catch(() => "");
+        mcpLastErrors[url] = `initialize 失败 HTTP ${initResponse.status}${body ? ` - ${body.slice(0, 180)}` : ""}`;
+      }
+    } catch (error) {
+      const hint =
+        error instanceof TypeError
+          ? "\n这通常是 CORS 跨域、网络不可达或端点不允许浏览器直连。"
+          : "";
+      mcpLastErrors[url] = `initialize 异常：${error.message || String(error)}${hint}`;
+    }
+
+    const listSessionId = mcpSessionIds[url] || null;
+    const listHeaders = listSessionId ? { ...baseHeaders, "Mcp-Session-Id": listSessionId } : baseHeaders;
+    const listResponse = await fetch(url, {
+      method: "POST",
+      headers: listHeaders,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+    });
+
+    if (!listResponse.ok) {
+      const body = await listResponse.text().catch(() => "");
+      mcpLastErrors[url] = `tools/list HTTP ${listResponse.status}${body ? ` - ${body.slice(0, 120)}` : ""}`;
+      return [];
+    }
+
+    const data = await parseMcpResponse(listResponse);
+    if (!data) {
+      mcpLastErrors[url] = "响应解析失败";
+      return [];
+    }
+    if (data.error) {
+      mcpLastErrors[url] = `JSON-RPC 错误 ${data.error.code}: ${data.error.message}`;
+      return [];
+    }
+
+    const tools = Array.isArray(data?.result?.tools) ? data.result.tools : [];
+    if (tools.length) delete mcpLastErrors[url];
+    return tools;
+  } catch (error) {
+    const hint =
+      error instanceof TypeError
+        ? "\n这通常是 CORS 跨域、网络不可达或端点不允许浏览器直连。"
+        : "";
+    mcpLastErrors[url] = `${error.message || String(error)}${hint}`;
+    return [];
+  }
+}
+
+async function initMcp() {
+  const servers = getMcpServers().filter((server) => server.enabled !== false);
+  mcpTools = [];
+  mcpToolMeta = {};
+  mcpLastErrors = {};
+
+  if (!servers.length) {
+    renderMcpList();
+    return;
+  }
+
+  const pending = [];
+  await Promise.all(
+    servers.map(async (server) => {
+      const resolved = resolveMcpServerConfig(server);
+      if (!resolved.ok) {
+        mcpLastErrors[server.id] = `JSON 解析失败：${resolved.error}`;
+        server._discoveredTools = [];
+        return;
+      }
+      if (!resolved.url) {
+        mcpLastErrors[server.id] = "未配置 URL";
+        server._discoveredTools = [];
+        return;
+      }
+      const tools = await fetchMcpTools(resolved.url, resolved.headers);
+      server._discoveredTools = tools;
+      if (tools.length) {
+        pending.push({ server, resolved, tools: tools.slice() });
+      }
+    })
+  );
+
+  const nameCount = {};
+  pending
+    .sort((left, right) =>
+      getMcpServerDisplayName(left.server).localeCompare(getMcpServerDisplayName(right.server), "en")
+    )
+    .forEach(({ server, resolved, tools }) => {
+      tools
+        .sort((left, right) => String(left.name || "").localeCompare(String(right.name || ""), "en"))
+        .forEach((tool) => {
+          const realName = String(tool.name || "").trim();
+          if (!realName) return;
+          if (server.toolOverrides?.[realName] === false) return;
+          nameCount[realName] = (nameCount[realName] || 0) + 1;
+          let exposedName = realName;
+          if (nameCount[realName] > 1) {
+            const suffix =
+              getMcpServerDisplayName(server)
+                .replace(/[^a-zA-Z0-9_-]/g, "")
+                .slice(0, 20) || server.id.slice(-4);
+            exposedName = `${realName}__${suffix}`;
+          }
+          mcpToolMeta[exposedName] = {
+            url: resolved.url,
+            headers: resolved.headers,
+            realName,
+            serverId: server.id,
+          };
+          mcpTools.push({ ...tool, name: exposedName });
+        });
+    });
+
+  mcpTools.sort((left, right) => String(left.name || "").localeCompare(String(right.name || ""), "en"));
+  await writeState();
+  renderMcpList();
+}
+
+async function callMcpTool(name, input = {}) {
+  const meta = mcpToolMeta[name];
+  if (!meta) return "[工具未找到]";
+
+  try {
+    const sessionId = mcpSessionIds[meta.url] || null;
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      ...(meta.headers || {}),
+      ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
+    };
+    const response = await fetch(meta.url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: Date.now(),
+        method: "tools/call",
+        params: { name: meta.realName, arguments: input || {} },
+      }),
+    });
+
+    if (!response.ok) return `[调用失败 HTTP ${response.status}]`;
+    const data = await parseMcpResponse(response);
+    if (Array.isArray(data?.result?.content)) {
+      return data.result.content
+        .map((part) => {
+          if (part?.type === "text") return part.text || "";
+          if (part?.text) return part.text;
+          return JSON.stringify(part);
+        })
+        .filter(Boolean)
+        .join("\n");
+    }
+    if (data?.result !== undefined) return JSON.stringify(data.result);
+    if (data?.error) return `[工具错误] ${JSON.stringify(data.error)}`;
+    return "[无返回]";
+  } catch (error) {
+    return `[调用出错: ${error.message || String(error)}]`;
+  }
+}
+
+function isMcpToolError(result) {
+  return /^\[(工具未找到|调用失败|工具错误|调用出错|无返回)/.test(String(result || ""));
+}
+
+function getEnabledMcpToolsForOpenAI() {
+  return mcpTools.map((tool) => ({
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description || "",
+      parameters: sanitizeToolSchema(
+        tool.input_schema || tool.inputSchema || { type: "object", properties: {} }
+      ),
+    },
+  }));
+}
+
+function setMcpEditorMode(mode) {
+  editingMcpMode = mode === "json" ? "json" : "simple";
+  dom.mcpModeSimpleBtn?.classList.toggle("active", editingMcpMode === "simple");
+  dom.mcpModeJsonBtn?.classList.toggle("active", editingMcpMode === "json");
+  if (dom.mcpSimpleFields) dom.mcpSimpleFields.hidden = editingMcpMode === "json";
+  if (dom.mcpJsonField) dom.mcpJsonField.hidden = editingMcpMode !== "json";
+}
+
+function resetMcpForm() {
+  editingMcpServerId = "";
+  setMcpEditorMode("simple");
+  if (dom.mcpEditorTitle) dom.mcpEditorTitle.textContent = "新增 / 编辑服务器";
+  if (dom.mcpServerName) dom.mcpServerName.value = "";
+  if (dom.mcpServerUrl) dom.mcpServerUrl.value = "";
+  if (dom.mcpServerJson) dom.mcpServerJson.value = "";
+  if (dom.mcpServerEnabled) dom.mcpServerEnabled.checked = true;
+  renderMcpToolList(null);
+}
+
+function fillMcpForm(server) {
+  editingMcpServerId = server.id;
+  setMcpEditorMode(server.mode);
+  if (dom.mcpEditorTitle) dom.mcpEditorTitle.textContent = getMcpServerDisplayName(server);
+  if (dom.mcpServerName) dom.mcpServerName.value = server.name || "";
+  if (dom.mcpServerUrl) dom.mcpServerUrl.value = server.url || "";
+  if (dom.mcpServerJson) dom.mcpServerJson.value = server.json || "";
+  if (dom.mcpServerEnabled) dom.mcpServerEnabled.checked = server.enabled !== false;
+  renderMcpToolList(server);
+}
+
+function syncMcpFormToServer(server) {
+  server.name = dom.mcpServerName?.value.trim() || "";
+  server.mode = editingMcpMode;
+  server.url = dom.mcpServerUrl?.value.trim() || "";
+  server.json = dom.mcpServerJson?.value || "";
+  server.enabled = Boolean(dom.mcpServerEnabled?.checked);
+  server.toolOverrides = server.toolOverrides || {};
+}
+
+function renderMcpToolList(server) {
+  if (!dom.mcpToolList || !dom.mcpToolEmpty) return;
+  dom.mcpToolList.innerHTML = "";
+  const tools = Array.isArray(server?._discoveredTools) ? server._discoveredTools : [];
+  dom.mcpToolEmpty.hidden = tools.length > 0;
+  if (!tools.length) return;
+
+  tools.forEach((tool) => {
+    const name = String(tool.name || "");
+    const enabled = server.toolOverrides?.[name] !== false;
+    const row = document.createElement("div");
+    row.className = "mcp-tool-row";
+    row.innerHTML = `
+      <div class="mcp-tool-head">
+        <div>
+          <h4 class="mcp-tool-name">${escapeHtml(name)}</h4>
+          ${tool.description ? `<p class="mcp-tool-desc">${escapeHtml(tool.description)}</p>` : ""}
+        </div>
+        <label class="mcp-switch">
+          <input type="checkbox" ${enabled ? "checked" : ""} />
+          <span class="mcp-switch-slider"></span>
+        </label>
+      </div>
+    `;
+    row.querySelector('input[type="checkbox"]')?.addEventListener("change", (event) => {
+      server.toolOverrides = server.toolOverrides || {};
+      if (event.target.checked) {
+        delete server.toolOverrides[name];
+      } else {
+        server.toolOverrides[name] = false;
+      }
+      writeState().catch((error) => console.error("保存 MCP 工具开关失败", error));
+      void initMcp();
+    });
+    dom.mcpToolList.appendChild(row);
+  });
+}
+
+function renderMcpList() {
+  if (!dom.mcpServerList) return;
+  const servers = getMcpServers();
+  const enabledToolCount = mcpTools.length;
+  const errorCount = Object.keys(mcpLastErrors).length;
+  if (dom.mcpStatusLabel) {
+    dom.mcpStatusLabel.textContent = servers.length
+      ? `${enabledToolCount} 个可用工具${errorCount ? ` · ${errorCount} 个错误` : ""}`
+      : "未配置";
+  }
+
+  dom.mcpServerList.innerHTML = "";
+  if (!servers.length) {
+    dom.mcpServerList.innerHTML = '<div class="memory-empty">暂无 MCP 服务器，点击下方按钮添加。</div>';
+    return;
+  }
+
+  servers.forEach((server) => {
+    const resolved = resolveMcpServerConfig(server);
+    const error = mcpLastErrors[resolved.url] || mcpLastErrors[server.id] || (!resolved.ok ? resolved.error : "");
+    const tools = Array.isArray(server._discoveredTools) ? server._discoveredTools : [];
+    const totalTools = tools.length;
+    const enabledTools = tools.filter((tool) => server.toolOverrides?.[tool.name] !== false).length;
+    const card = document.createElement("article");
+    card.className = "mcp-server-card";
+    const statusClass = server.enabled === false ? "off" : error ? "err" : totalTools ? "ok" : "";
+    const statusText = server.enabled === false ? "已停用" : error ? "连接失败" : totalTools ? "已连接" : "未连接";
+    card.innerHTML = `
+      <div class="mcp-server-head">
+        <div>
+          <h4 class="mcp-server-name">${escapeHtml(getMcpServerDisplayName(server))}</h4>
+          <p class="mcp-server-meta">${escapeHtml(resolved.url || "未填写 URL")}</p>
+        </div>
+        <label class="mcp-switch">
+          <input type="checkbox" ${server.enabled !== false ? "checked" : ""} />
+          <span class="mcp-switch-slider"></span>
+        </label>
+      </div>
+      <div class="mcp-badges">
+        <span class="mcp-badge ${statusClass}">${statusText}</span>
+        <span class="mcp-badge">${server.mode === "json" ? "JSON" : "简单"}</span>
+        <span class="mcp-badge">工具 ${enabledTools}/${totalTools}</span>
+      </div>
+      ${error ? `<p class="mcp-server-meta">${escapeHtml(error)}</p>` : ""}
+    `;
+    card.querySelector('input[type="checkbox"]')?.addEventListener("change", (event) => {
+      event.stopPropagation();
+      server.enabled = Boolean(event.target.checked);
+      writeState().catch((error) => console.error("保存 MCP 服务器开关失败", error));
+      void initMcp();
+    });
+    card.addEventListener("click", (event) => {
+      if (event.target.closest(".mcp-switch")) return;
+      fillMcpForm(server);
+    });
+    dom.mcpServerList.appendChild(card);
+  });
+}
+
+async function saveMcpServerFromForm() {
+  const servers = getMcpServers();
+  let server = servers.find((item) => item.id === editingMcpServerId);
+  if (!server) {
+    server = normalizeMcpServer({ id: createMcpServerId(), enabled: true });
+    servers.unshift(server);
+    editingMcpServerId = server.id;
+  }
+  syncMcpFormToServer(server);
+  const resolved = resolveMcpServerConfig(server);
+  if (!resolved.ok) {
+    showTempStatus(dom.saveMcpServerBtn, `JSON 格式错误：${resolved.error}`);
+    return;
+  }
+  if (!resolved.url) {
+    showTempStatus(dom.saveMcpServerBtn, "请填写 MCP HTTP 端点。");
+    return;
+  }
+  await writeState();
+  renderMcpList();
+  fillMcpForm(server);
+  await initMcp();
+  renderMcpToolList(server);
+  showTempStatus(dom.saveMcpServerBtn, "MCP 服务器已保存。");
+}
+
+async function refreshEditingMcpTools() {
+  const server = getMcpServers().find((item) => item.id === editingMcpServerId);
+  if (!server) {
+    showTempStatus(dom.refreshMcpToolsBtn, "请先保存服务器。");
+    return;
+  }
+  syncMcpFormToServer(server);
+  const resolved = resolveMcpServerConfig(server);
+  if (!resolved.ok) {
+    showTempStatus(dom.refreshMcpToolsBtn, `JSON 格式错误：${resolved.error}`);
+    return;
+  }
+  if (!resolved.url) {
+    showTempStatus(dom.refreshMcpToolsBtn, "请填写 MCP HTTP 端点。");
+    return;
+  }
+
+  const originalText = dom.refreshMcpToolsBtn.textContent;
+  dom.refreshMcpToolsBtn.disabled = true;
+  dom.refreshMcpToolsBtn.textContent = "刷新中...";
+  try {
+    server._discoveredTools = await fetchMcpTools(resolved.url, resolved.headers);
+    await writeState();
+    renderMcpToolList(server);
+    await initMcp();
+    showTempStatus(
+      dom.refreshMcpToolsBtn,
+      server._discoveredTools.length
+        ? `已发现 ${server._discoveredTools.length} 个工具。`
+        : mcpLastErrors[resolved.url] || "未发现工具。"
+    );
+  } finally {
+    dom.refreshMcpToolsBtn.disabled = false;
+    dom.refreshMcpToolsBtn.textContent = originalText;
+  }
+}
+
+async function deleteEditingMcpServer() {
+  if (!editingMcpServerId) {
+    resetMcpForm();
+    return;
+  }
+  if (!window.confirm("确定删除此 MCP 服务器？")) return;
+  appState.mcp.servers = getMcpServers().filter((server) => server.id !== editingMcpServerId);
+  resetMcpForm();
+  await writeState();
+  await initMcp();
+}
+
+async function importMcpServersFromJson() {
+  const raw = dom.mcpImportJson?.value.trim() || "";
+  if (!raw) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    showTempStatus(dom.mcpImportBtn, `JSON 解析失败：${error.message}`);
+    return;
+  }
+
+  let entries = [];
+  if (parsed.mcpServers && typeof parsed.mcpServers === "object") {
+    entries = Object.entries(parsed.mcpServers).map(([key, value]) => ({ key, value }));
+  } else if (parsed.url || parsed.baseUrl) {
+    entries = [{ key: parsed.name || "server", value: parsed }];
+  }
+
+  let count = 0;
+  entries.forEach(({ key, value }) => {
+    if (!value || typeof value !== "object") return;
+    const url = value.url || value.baseUrl;
+    if (!url) return;
+    getMcpServers().unshift(
+      normalizeMcpServer({
+        name: value.name || key,
+        mode: "json",
+        json: JSON.stringify(
+          {
+            name: value.name || key,
+            url,
+            headers: value.headers || null,
+          },
+          null,
+          2
+        ),
+        enabled: value.isActive !== false,
+      })
+    );
+    count += 1;
+  });
+
+  if (!count) {
+    showTempStatus(dom.mcpImportBtn, '未识别到有效结构，请使用 {"mcpServers": {...}} 或包含 url/baseUrl 的对象。');
+    return;
+  }
+
+  dom.mcpImportJson.value = "";
+  dom.mcpImportCard.hidden = true;
+  await writeState();
+  await initMcp();
+  showChatStatus(`已导入 ${count} 个 MCP 服务器。`, 3200);
 }
 
 function renderToolGrid() {
@@ -1929,7 +2548,11 @@ function renderToolGrid() {
     if (name === "设置") {
       button.addEventListener("click", () => openSheet(dom.apiSheet));
     } else if (name === "MCP工具") {
-      button.addEventListener("click", () => showChatStatus("MCP工具入口已保留，功能代码已移除。", 2600));
+      button.addEventListener("click", () => {
+        renderMcpList();
+        resetMcpForm();
+        openSheet(dom.mcpSheet);
+      });
     } else if (name === "后台消息") {
       button.addEventListener("click", () => {
         renderBackgroundMessageForm();
@@ -2748,6 +3371,7 @@ async function retryAssistantMessage(messageId) {
     });
     placeholderMessage.content = result.reply;
     placeholderMessage.thinking = result.thinking;
+    placeholderMessage.toolsUsed = result.toolsUsed || [];
     renderMessages();
     await writeState();
     showChatStatus("已重新生成这条 AI 消息。");
@@ -2800,6 +3424,15 @@ function createMessageElement(message, index) {
 
   const showThinking = message.role === "assistant" && message.thinking;
   const showActionMenu = activeMessageMenuId === message.id;
+  const usedTools = Array.isArray(message.toolsUsed) ? message.toolsUsed : [];
+  const toolsUsedHtml =
+    message.role === "assistant" && usedTools.length
+      ? `<div class="mcp-used-note">MCP：${escapeHtml(
+          usedTools
+            .map((tool) => (tool.failed ? `${tool.name || "unknown"} 失败` : tool.name || "unknown"))
+            .join("、")
+        )}</div>`
+      : "";
   const actionMenuHtml = showActionMenu
     ? `<div class="message-action-menu">${getMessageActions(message.role)
         .map(createMessageActionButton)
@@ -2841,6 +3474,7 @@ function createMessageElement(message, index) {
             : ""
         }
         <div class="bubble">${escapeHtml(message.content)}</div>
+        ${toolsUsedHtml}
         <div class="time">${message.timestamp}</div>
       </div>
     </div>
@@ -3601,6 +4235,88 @@ function extractStreamDeltaText(eventData) {
   }
 }
 
+async function readOpenAIStreamWithTools(stream, onText) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder("utf-8");
+  const toolCallMap = {};
+  let buffer = "";
+  let textContent = "";
+  let stopReason = "";
+
+  const handlePayload = (payload) => {
+    const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
+    if (!choice) return;
+    if (choice.finish_reason) stopReason = choice.finish_reason;
+
+    const deltaContent = choice.delta?.content;
+    if (deltaContent != null) {
+      textContent += extractTextContent(deltaContent);
+      if (onText) onText(textContent);
+    }
+
+    const toolCalls = choice.delta?.tool_calls;
+    if (Array.isArray(toolCalls)) {
+      toolCalls.forEach((toolCall) => {
+        const index = Number.isInteger(toolCall.index) ? toolCall.index : 0;
+        if (!toolCallMap[index]) {
+          toolCallMap[index] = { id: "", name: "", args: "" };
+        }
+        if (toolCall.id) toolCallMap[index].id = toolCall.id;
+        if (toolCall.function?.name) toolCallMap[index].name += toolCall.function.name;
+        if (toolCall.function?.arguments) toolCallMap[index].args += toolCall.function.arguments;
+      });
+    }
+  };
+
+  const consumeSseEvent = (eventChunk) => {
+    const dataLines = String(eventChunk || "")
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"));
+    if (!dataLines.length) return;
+    const raw = dataLines.map((line) => line.slice(5).trimStart()).join("\n").trim();
+    if (!raw || raw === "[DONE]") return;
+    try {
+      handlePayload(JSON.parse(raw));
+    } catch (error) {
+      textContent += raw;
+      if (onText) onText(textContent);
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    const decoded = value ? decoder.decode(value, { stream: !done }) : "";
+    buffer += decoded;
+    const events = buffer.split(/\r?\n\r?\n/);
+    buffer = events.pop() || "";
+    events.forEach(consumeSseEvent);
+    if (done) break;
+  }
+
+  const flushText = decoder.decode();
+  if (flushText) buffer += flushText;
+  if (buffer.trim()) consumeSseEvent(buffer);
+
+  const toolUses = Object.keys(toolCallMap)
+    .sort((left, right) => Number(left) - Number(right))
+    .map((key) => {
+      let input = {};
+      try {
+        input = JSON.parse(toolCallMap[key].args || "{}");
+      } catch (error) {
+        input = {};
+      }
+      return {
+        id: toolCallMap[key].id || `call_${key}_${Date.now()}`,
+        name: toolCallMap[key].name,
+        input,
+      };
+    })
+    .filter((toolUse) => toolUse.name);
+
+  return { textContent, toolUses, stopReason };
+}
+
 function updateStreamingAssistantMessage(message, thinking, reply) {
   if (!message) return;
   message.thinking = String(thinking || "");
@@ -3629,10 +4345,16 @@ async function requestAssistantReply(
   }
 
   let memoryContext = "";
+  let fixedNoticeContext = "";
   try {
     memoryContext = await buildMemoryContext(latestUserText);
   } catch (error) {
     console.error("记忆检索失败", error);
+  }
+  try {
+    fixedNoticeContext = await buildFixedNoticeContext();
+  } catch (error) {
+    console.error("注意事项读取失败", error);
   }
 
   const hiddenTimePrefix = buildHiddenTimePrefix(new Date());
@@ -3655,62 +4377,18 @@ async function requestAssistantReply(
     windowMessages[latestUserIndex].content = `${hiddenTimePrefix}\n${originalContent}`;
   }
 
-  const payload = {
-    model: api.model.trim(),
-    temperature: Number(api.temperature ?? 0.9),
-    stream: true,
-    response_format: { type: "json_object" },
-    messages: [
-      {
-        role: "system",
-        content: buildSystemPrompt(memoryContext),
-      },
-      ...windowMessages,
-    ],
-  };
-
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${api.apiKey.trim()}`,
+  const apiMessages = [
+    {
+      role: "system",
+      content: buildSystemPrompt(memoryContext, fixedNoticeContext),
     },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `请求失败：${response.status}`);
-  }
-
-  if (!response.body) {
-    const data = await response.json();
-    const message = data?.choices?.[0]?.message || data?.message || {};
-    const content = extractTextContent(message.content);
-    if (!content) {
-      throw new Error("接口未返回有效内容。");
-    }
-    const parsed = safeJsonParse(content);
-    if (!parsed.reply) {
-      throw new Error("返回内容缺少 reply 字段。");
-    }
-    return {
-      thinking: String(parsed.thinking || ""),
-      reply: String(parsed.reply || ""),
-    };
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  const isEventStream = (response.headers.get("content-type") || "")
-    .toLowerCase()
-    .includes("text/event-stream");
-  let rawStructuredText = "";
-  let streamBuffer = "";
+    ...windowMessages,
+  ];
+  const tools = getEnabledMcpToolsForOpenAI();
   let lastThinking = "";
   let lastReply = "";
 
-  const emitProgress = () => {
+  const emitProgress = (rawStructuredText) => {
     if (!onProgress) return;
     const partial = extractPartialAssistantPayload(rawStructuredText);
     if (partial.thinking === lastThinking && partial.reply === lastReply) return;
@@ -3719,56 +4397,112 @@ async function requestAssistantReply(
     onProgress(partial);
   };
 
-  const appendStructuredText = (nextChunk) => {
-    if (!nextChunk) return;
-    rawStructuredText += nextChunk;
-    emitProgress();
-  };
+  let rawStructuredText = "";
+  const usedTools = [];
+  let loopGuard = 0;
 
-  const consumeSseEvent = (eventChunk) => {
-    const dataLines = String(eventChunk || "")
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"));
-    if (!dataLines.length) return;
-
-    const data = dataLines.map((line) => line.slice(5).trimStart()).join("\n");
-    if (!data || data === "[DONE]") return;
-    appendStructuredText(extractStreamDeltaText(data));
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    const decoded = value ? decoder.decode(value, { stream: !done }) : "";
-
-    if (isEventStream) {
-      streamBuffer += decoded;
-      const events = streamBuffer.split(/\r?\n\r?\n/);
-      streamBuffer = events.pop() || "";
-      events.forEach(consumeSseEvent);
-    } else {
-      appendStructuredText(decoded);
+  while (loopGuard < 12) {
+    loopGuard += 1;
+    const payload = {
+      model: api.model.trim(),
+      temperature: Number(api.temperature ?? 0.9),
+      stream: true,
+      response_format: { type: "json_object" },
+      messages: apiMessages,
+    };
+    if (tools.length) {
+      payload.tools = tools;
     }
 
-    if (done) {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${api.apiKey.trim()}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(detail || `请求失败：${response.status}`);
+    }
+
+    if (!response.body) {
+      const data = await response.json();
+      const message = data?.choices?.[0]?.message || data?.message || {};
+      const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+      if (toolCalls.length) {
+        apiMessages.push({
+          role: "assistant",
+          content: message.content || null,
+          tool_calls: toolCalls,
+        });
+        for (const toolCall of toolCalls) {
+          let input = {};
+          try {
+            input = JSON.parse(toolCall.function?.arguments || "{}");
+          } catch (error) {
+            input = {};
+          }
+          const result = await callMcpTool(toolCall.function?.name, input);
+          usedTools.push({
+            name: toolCall.function?.name || "unknown",
+            failed: isMcpToolError(result),
+          });
+          apiMessages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: result,
+          });
+        }
+        continue;
+      }
+      rawStructuredText = extractTextContent(message.content);
       break;
     }
-  }
 
-  const flushText = decoder.decode();
-  if (flushText) {
-    if (isEventStream) {
-      streamBuffer += flushText;
-    } else {
-      appendStructuredText(flushText);
+    const turn = await readOpenAIStreamWithTools(response.body, (text) => {
+      rawStructuredText = text;
+      emitProgress(rawStructuredText);
+    });
+    rawStructuredText = turn.textContent || "";
+
+    if (turn.toolUses.length) {
+      const toolCalls = turn.toolUses.map((toolUse, index) => ({
+        id: toolUse.id || `call_${index}_${Date.now()}`,
+        type: "function",
+        function: {
+          name: toolUse.name,
+          arguments: JSON.stringify(toolUse.input || {}),
+        },
+      }));
+      apiMessages.push({
+        role: "assistant",
+        content: rawStructuredText || null,
+        tool_calls: toolCalls,
+      });
+      for (const toolUse of turn.toolUses) {
+        const result = await callMcpTool(toolUse.name, toolUse.input || {});
+        usedTools.push({
+          name: toolUse.name,
+          failed: isMcpToolError(result),
+        });
+        apiMessages.push({
+          role: "tool",
+          tool_call_id: toolUse.id,
+          content: result,
+        });
+      }
+      rawStructuredText = "";
+      continue;
     }
-  }
 
-  if (isEventStream && streamBuffer.trim()) {
-    consumeSseEvent(streamBuffer);
+    break;
   }
 
   if (!rawStructuredText) {
-    throw new Error("接口未返回有效内容。");
+    throw new Error(loopGuard >= 12 ? "工具调用轮数过多，已停止。" : "接口未返回有效内容。");
   }
 
   const parsed = safeJsonParse(rawStructuredText);
@@ -3779,6 +4513,7 @@ async function requestAssistantReply(
   return {
     thinking: String(parsed.thinking || ""),
     reply: String(parsed.reply || ""),
+    toolsUsed: usedTools,
   };
 }
 
@@ -3826,6 +4561,7 @@ async function handleSendMessage(event) {
     });
     assistantMessage.content = result.reply;
     assistantMessage.thinking = result.thinking;
+    assistantMessage.toolsUsed = result.toolsUsed || [];
     renderMessages();
     await waitForNextFrame();
     vibrateDevice(200);
@@ -3868,15 +4604,13 @@ function createMemoryCard(memory, showActions = true) {
   const roomLabel = ROOM_LABELS[memory.room] || "记忆";
   const sourceLabel = memory.source_contact ? ` · ${escapeHtml(memory.source_contact)}` : "";
   const extraInfo =
-    memory.room === "schedule" && memory.schedule_at
-      ? `事件时间：${formatDateTime(memory.schedule_at)}`
-      : memory.room === "impression" && memory.impression_section
-      ? `印象分区：${IMPRESSION_LABELS[memory.impression_section]}`
-      : memory.room === "short_term" && memory.expires_at
-      ? `失效时间：${formatDateTime(memory.expires_at)}`
+    memory.room === "impression"
+      ? "每次聊天固定注入"
       : `创建时间：${formatDateTime(memory.created_at)}`;
   const scoreInfo =
-    typeof memory.matched_score === "number" || typeof memory.score === "number"
+    memory.room === "impression"
+      ? "非向量记忆"
+      : typeof memory.matched_score === "number" || typeof memory.score === "number"
       ? `相似度 ${(memory.matched_similarity ?? memory.similarity).toFixed(3)} · 综合权重 ${(memory.matched_score ?? memory.score).toFixed(3)}`
       : `提取次数 ${memory.retrieval_count || 0} · R=${retention.toFixed(3)}`;
 
@@ -3926,8 +4660,10 @@ function fillMemoryForm(memory) {
   dom.memoryImportance.value = String(normalizeImportance(memory.importance));
   dom.memoryEmbedding.value = JSON.stringify(memory.embedding || []);
   dom.memorySourceContact.value = memory.source_contact || "";
-  dom.memoryScheduleAt.value = formatDateTimeInput(memory.schedule_at);
-  dom.memoryImpressionSection.value = normalizeImpressionSection(memory.impression_section);
+  if (dom.memoryScheduleAt) dom.memoryScheduleAt.value = formatDateTimeInput(memory.schedule_at);
+  if (dom.memoryImpressionSection) {
+    dom.memoryImpressionSection.value = normalizeImpressionSection(memory.impression_section);
+  }
 }
 
 async function renderMemoryList() {
@@ -3985,16 +4721,14 @@ async function handleSaveMemory() {
   try {
     await saveMemory(content, embedding, currentMemoryRoom, dom.memoryImportance.value, {
       id: editingMemoryId || undefined,
-      source_contact: dom.memorySourceContact.value.trim(),
+      source_contact:
+        currentMemoryRoom === "impression" ? "" : dom.memorySourceContact.value.trim(),
       impression_section:
         currentMemoryRoom === "impression"
-          ? dom.memoryImpressionSection.value
+          ? "notes"
           : "",
-      schedule_at:
-        currentMemoryRoom === "schedule" && dom.memoryScheduleAt.value
-          ? Date.parse(dom.memoryScheduleAt.value)
-          : null,
-      expires_at: currentMemoryRoom === "short_term" ? Date.now() + SHORT_TERM_TTL_MS : null,
+      schedule_at: null,
+      expires_at: null,
     });
     resetMemoryForm();
     await renderMemoryList();
@@ -4113,7 +4847,7 @@ function legacyMemoryItemToRecord(item, room, sourceContact, sourceContactId) {
     last_accessed: timestamp,
     source_contact: sourceContact,
     source_contact_id: sourceContactId,
-    expires_at: room === "short_term" ? timestamp + SHORT_TERM_TTL_MS : null,
+    expires_at: null,
   };
 }
 
@@ -4146,7 +4880,7 @@ function convertLegacyMemoryPayload(memoriesMap, contacts = []) {
       if (record) records.push(record);
     });
     shortItems.forEach((item) => {
-      const record = legacyMemoryItemToRecord(item, "short_term", sourceContact, contactId);
+      const record = legacyMemoryItemToRecord(item, "long_term", sourceContact, contactId);
       if (record) records.push(record);
     });
     const impressions = normalizeLegacyImpressions(rawBucket.userImpressions);
@@ -4178,7 +4912,8 @@ async function importAndRebuildVectors(oldMemories) {
     const normalized = normalizeMemoryRecord(item);
     if (!normalized.content) continue;
     console.log(`正在迁移第 ${index + 1}/${total} 条记忆...`);
-    const rebuiltEmbedding = await fetchBgeM3Embedding(normalized.content);
+    const rebuiltEmbedding =
+      normalized.room === "impression" ? [] : await fetchBgeM3Embedding(normalized.content);
     rebuilt.push({
       ...normalized,
       embedding: rebuiltEmbedding,
@@ -4401,6 +5136,9 @@ function bindSheetClosers() {
   document.querySelectorAll("[data-close-api]").forEach((element) => {
     element.addEventListener("click", () => closeSheet(dom.apiSheet));
   });
+  document.querySelectorAll("[data-close-mcp]").forEach((element) => {
+    element.addEventListener("click", () => closeSheet(dom.mcpSheet));
+  });
   document.querySelectorAll("[data-close-memory]").forEach((element) => {
     element.addEventListener("click", () => closeSheet(dom.memorySheet));
   });
@@ -4446,6 +5184,29 @@ function setupEvents() {
   dom.temperatureRange.addEventListener("input", () => syncTemperature(true));
   dom.temperatureInput.addEventListener("input", () => syncTemperature(false));
   dom.composerForm.addEventListener("submit", handleSendMessage);
+  dom.addMcpServerBtn?.addEventListener("click", resetMcpForm);
+  dom.mcpFormResetBtn?.addEventListener("click", resetMcpForm);
+  dom.mcpModeSimpleBtn?.addEventListener("click", () => setMcpEditorMode("simple"));
+  dom.mcpModeJsonBtn?.addEventListener("click", () => setMcpEditorMode("json"));
+  dom.saveMcpServerBtn?.addEventListener("click", () => {
+    void saveMcpServerFromForm();
+  });
+  dom.refreshMcpToolsBtn?.addEventListener("click", () => {
+    void refreshEditingMcpTools();
+  });
+  dom.deleteMcpServerBtn?.addEventListener("click", () => {
+    void deleteEditingMcpServer();
+  });
+  dom.importMcpJsonOpenBtn?.addEventListener("click", () => {
+    if (dom.mcpImportJson) dom.mcpImportJson.value = "";
+    if (dom.mcpImportCard) dom.mcpImportCard.hidden = false;
+  });
+  dom.mcpImportCloseBtn?.addEventListener("click", () => {
+    if (dom.mcpImportCard) dom.mcpImportCard.hidden = true;
+  });
+  dom.mcpImportBtn?.addEventListener("click", () => {
+    void importMcpServersFromJson();
+  });
   dom.bulkCancelBtn.addEventListener("click", exitBulkDeleteMode);
   dom.bulkDeleteBtn.addEventListener("click", deleteSelectedMessages);
   dom.saveMessageEditBtn.addEventListener("click", saveEditedMessage);
@@ -4563,13 +5324,16 @@ async function initializeApp() {
   renderApiForm();
   renderThemeForm();
   renderBackgroundMessageForm();
+  renderMcpList();
   renderMessages();
   setupEvents();
   await registerServiceWorker();
   resetMemoryForm();
+  resetMcpForm();
   resetWorldbookForm();
   await renderMemoryList();
   renderWorldbookList();
+  void initMcp();
   autoGrowTextarea();
   applyChatTheme();
   await scheduleBackgroundMessageTimer();

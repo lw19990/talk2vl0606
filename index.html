@@ -250,6 +250,98 @@
       </div>
     </div>
 
+    <div class="sheet settings-sheet" id="mcp-sheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-close-mcp></div>
+      <div class="sheet-panel mcp-panel">
+        <button class="sheet-close" type="button" data-close-mcp>×</button>
+        <p class="sheet-kicker dark-text">MCP Tools</p>
+        <h3 class="memory-title">MCP 工具</h3>
+        <p class="memory-hint">
+          添加支持 Streamable HTTP 的 MCP 服务器后，聊天时会自动把已启用工具发送给模型。网页直连 MCP
+          端点需要服务器允许 CORS。
+        </p>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h4>服务器列表</h4>
+            <span class="memory-count" id="mcp-status-label">未配置</span>
+          </div>
+          <div class="mcp-server-list" id="mcp-server-list"></div>
+          <div class="mcp-actions">
+            <button class="secondary-btn" id="add-mcp-server-btn" type="button">添加服务器</button>
+            <button class="secondary-btn" id="import-mcp-json-open-btn" type="button">批量导入 JSON</button>
+          </div>
+        </section>
+
+        <section class="memory-card">
+          <div class="memory-card-head">
+            <h4 id="mcp-editor-title">新增 / 编辑服务器</h4>
+            <button class="text-btn" id="mcp-form-reset-btn" type="button">清空</button>
+          </div>
+
+          <div class="tab-switcher mcp-mode-switcher">
+            <button class="tab-btn active" id="mcp-mode-simple-btn" type="button" data-mcp-mode="simple">
+              简单
+            </button>
+            <button class="tab-btn" id="mcp-mode-json-btn" type="button" data-mcp-mode="json">
+              JSON
+            </button>
+          </div>
+
+          <div id="mcp-simple-fields">
+            <label class="field">
+              <span>服务器名称</span>
+              <input id="mcp-server-name" type="text" maxlength="80" placeholder="例如 fetch / filesystem" />
+            </label>
+            <label class="field">
+              <span>MCP HTTP 端点</span>
+              <input id="mcp-server-url" type="text" placeholder="https://example.com/mcp" />
+            </label>
+          </div>
+
+          <label class="field" id="mcp-json-field" hidden>
+            <span>服务器 JSON</span>
+            <textarea
+              id="mcp-server-json"
+              rows="7"
+              placeholder='{"name":"my-server","url":"https://example.com/mcp","headers":{"Authorization":"Bearer xxx"}}'
+            ></textarea>
+          </label>
+
+          <label class="inline-check">
+            <input id="mcp-server-enabled" type="checkbox" checked />
+            <span>启用此服务器</span>
+          </label>
+
+          <div class="mcp-actions">
+            <button class="secondary-btn" id="refresh-mcp-tools-btn" type="button">刷新工具</button>
+            <button class="secondary-btn" id="delete-mcp-server-btn" type="button">删除服务器</button>
+          </div>
+
+          <div class="mcp-tool-list" id="mcp-tool-list"></div>
+          <div class="memory-empty" id="mcp-tool-empty">保存或刷新后会在这里显示工具列表。</div>
+
+          <button class="primary-save" id="save-mcp-server-btn" type="button">保存 MCP 服务器</button>
+        </section>
+
+        <section class="memory-card" id="mcp-import-card" hidden>
+          <div class="memory-card-head">
+            <h4>批量导入 JSON</h4>
+            <button class="text-btn" id="mcp-import-close-btn" type="button">取消</button>
+          </div>
+          <label class="field">
+            <span>粘贴 MCP 配置</span>
+            <textarea
+              id="mcp-import-json"
+              rows="7"
+              placeholder='{"mcpServers":{"my-server":{"url":"https://example.com/mcp","headers":{}}}}'
+            ></textarea>
+          </label>
+          <button class="primary-save" id="mcp-import-btn" type="button">导入服务器</button>
+        </section>
+      </div>
+    </div>
+
     <div class="sheet settings-sheet" id="memory-sheet" aria-hidden="true">
       <div class="sheet-backdrop" data-close-memory></div>
       <div class="sheet-panel memory-panel">
@@ -280,14 +372,8 @@
           <button type="button" class="tab-btn active" data-memory-room="long_term">
             长期记忆
           </button>
-          <button type="button" class="tab-btn" data-memory-room="schedule">
-            日程记忆
-          </button>
-          <button type="button" class="tab-btn" data-memory-room="short_term">
-            短效记忆
-          </button>
           <button type="button" class="tab-btn" data-memory-room="impression">
-            用户印象
+            注意事项
           </button>
         </div>
 
@@ -305,30 +391,14 @@
               id="memory-content"
               rows="4"
               maxlength="4000"
-              placeholder="输入要保存的记忆内容"
+              placeholder="输入要保存的记忆内容；注意事项会固定注入每次聊天"
             ></textarea>
           </label>
 
-          <div class="memory-grid">
+          <div class="memory-grid" id="memory-detail-group">
             <label class="field">
               <span>重要性（1-10）</span>
               <input id="memory-importance" type="number" min="1" max="10" step="1" value="6" />
-            </label>
-
-            <label class="field" id="memory-schedule-group" hidden>
-              <span>事件时间</span>
-              <input id="memory-schedule-at" type="datetime-local" />
-            </label>
-          </div>
-
-          <div class="memory-grid">
-            <label class="field" id="memory-impression-group" hidden>
-              <span>印象分区</span>
-              <select id="memory-impression-section">
-                <option value="profile">基础认知</option>
-                <option value="relationship">我们的关系</option>
-                <option value="notes">注意事项</option>
-              </select>
             </label>
 
             <label class="field">
@@ -342,7 +412,7 @@
             </label>
           </div>
 
-          <label class="field">
+          <label class="field" id="memory-embedding-group">
             <span>Embedding（可选 JSON 数组，留空则本地自动生成）</span>
             <textarea
               id="memory-embedding"
