@@ -1,8 +1,10 @@
-const CACHE_NAME = "ai-chat-pwa-v4";
+const CACHE_NAME = "ai-chat-pwa-v5";
 const APP_ASSETS = [
   "./",
   "./index.html",
   "./style.css",
+  "./vendor/marked.min.js",
+  "./vendor/purify.min.js",
   "./script.js",
   "./manifest.webmanifest",
   "./icon.png",

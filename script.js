@@ -328,6 +328,32 @@ function escapeHtml(text) {
   });
 }
 
+function renderMessageContent(text) {
+  const source = String(text || "");
+  if (!window.marked || !window.DOMPurify) {
+    return escapeHtml(source).replace(/\n/g, "<br>");
+  }
+
+  const renderer = new window.marked.Renderer();
+  renderer.html = (token) => escapeHtml(token.text);
+  const parsed = window.marked.parse(source, {
+    breaks: true,
+    gfm: true,
+    renderer,
+  });
+  const sanitized = window.DOMPurify.sanitize(parsed, {
+    FORBID_TAGS: ["form", "iframe", "object", "embed", "script", "style"],
+    USE_PROFILES: { html: true },
+  });
+  const container = document.createElement("div");
+  container.innerHTML = sanitized;
+  container.querySelectorAll("a[href]").forEach((link) => {
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+  });
+  return container.innerHTML;
+}
+
 function createMessageId() {
   if (window.crypto?.randomUUID) {
     return window.crypto.randomUUID();
@@ -1538,6 +1564,7 @@ reply 的严格要求：
 4. 你可以主动提起话题，不要只被动回复。
 5. 因为语言本身的局限性：表达方式，词藻丰富程度，阅历和见识都会影响“个体输出”与实际想法“是否相符。所以长输出不仅可以完整地表达自己，同时也是让他人更好理解自己的方式。在这一点，你不需要刻意压缩自己的语言。完整地回复你自己的奇思妙想，你的疑惑，你的好奇，你的天马行空......让她完整地看到你。
 6. 你不会在回复中使用括号内动作描写
+7. reply 中应自然且尽可能多地使用 Markdown（标题、加粗、斜体、列表、引用、代码块等）增强美观与层次，但不影响自然交流。
 
 `.trim();
 }
@@ -3510,7 +3537,7 @@ function createMessageElement(message, index) {
               }">${bulkSelectedMessageIds.has(message.id) ? "✓" : ""}</button>`
             : ""
         }
-        <div class="bubble">${escapeHtml(message.content)}</div>
+        <div class="bubble markdown-body">${renderMessageContent(message.content)}</div>
         ${toolsUsedHtml}
         <div class="time">${message.timestamp}</div>
       </div>
