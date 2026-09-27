@@ -2482,15 +2482,39 @@ async function refreshEditingMcpTools() {
 }
 
 async function deleteEditingMcpServer() {
-  if (!editingMcpServerId) {
+  const serverId = editingMcpServerId;
+  if (!serverId) {
     resetMcpForm();
     return;
   }
-  if (!window.confirm("确定删除此 MCP 服务器？")) return;
-  appState.mcp.servers = getMcpServers().filter((server) => server.id !== editingMcpServerId);
+
+  const server = getMcpServers().find((item) => item.id === serverId);
+  if (!server) {
+    resetMcpForm();
+    renderMcpList();
+    return;
+  }
+  if (!window.confirm(`确定删除 MCP 服务器「${getMcpServerDisplayName(server)}」？`)) return;
+
+  // 立即更新内存状态和界面；不要等待 MCP 网络请求完成，否则删除看起来会失效。
+  appState.mcp = {
+    ...appState.mcp,
+    servers: (Array.isArray(appState.mcp?.servers) ? appState.mcp.servers : []).filter(
+      (item) => item?.id !== serverId
+    ),
+  };
+  mcpTools = mcpTools.filter((tool) => mcpToolMeta[tool.name]?.serverId !== serverId);
+  Object.keys(mcpToolMeta).forEach((toolName) => {
+    if (mcpToolMeta[toolName]?.serverId === serverId) {
+      delete mcpToolMeta[toolName];
+    }
+  });
+
   resetMcpForm();
+  renderMcpList();
   await writeState();
-  await initMcp();
+  void initMcp().catch((error) => console.error("刷新 MCP 服务器失败", error));
+  showChatStatus("MCP 服务器已删除。");
 }
 
 async function importMcpServersFromJson() {
