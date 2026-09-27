@@ -296,6 +296,16 @@ function buildHiddenTimePrefix(date = new Date()) {
   return `[发送于：${year}/${month}/${day} ${hh}:${mm} ${getWeekdayLabel(date)}]`;
 }
 
+function getMessageTimeContext(message) {
+  const storedTime = normalizeTimestamp(message?.time_context_at, 0);
+  if (storedTime) return new Date(storedTime);
+
+  const legacyTime = new Date(String(message?.timestamp || ""));
+  if (!Number.isNaN(legacyTime.getTime())) return legacyTime;
+
+  return new Date();
+}
+
 function formatSummaryDateTime(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -333,6 +343,9 @@ function normalizeMessageRecord(raw = {}) {
     thinking: String(raw.thinking || ""),
     toolsUsed: Array.isArray(raw.toolsUsed) ? raw.toolsUsed : [],
     timestamp: String(raw.timestamp || formatTime(new Date())),
+    time_context_at: raw.time_context_at
+      ? normalizeTimestamp(raw.time_context_at, 0)
+      : 0,
   };
 }
 
@@ -342,6 +355,7 @@ function createMessage(role, content, thinking = "") {
     content,
     thinking,
     timestamp: formatTime(new Date()),
+    time_context_at: Date.now(),
   });
 }
 
@@ -1566,7 +1580,10 @@ function serializeMessagesForSummary(messages) {
   return messages
     .map((message, index) => {
       const role = message.role === "assistant" ? "AI" : "用户";
-      const timestamp = message.timestamp || `消息${index + 1}`;
+      const timestamp =
+        message.role === "user"
+          ? formatSummaryDateTime(getMessageTimeContext(message))
+          : message.timestamp || `消息${index + 1}`;
       return `[${timestamp}] ${role}: ${message.content || ""}`;
     })
     .join("\n");
@@ -1666,7 +1683,6 @@ async function extractStructuredMemoriesFromMessages(messages) {
 
   const transcript = serializeMessagesForSummary(messages);
   const selfName = profile.selfName?.trim() || "用户";
-  const currentDateTime = formatSummaryDateTime(new Date());
   const systemPrompt = `
 你是后台对话记忆总结器。请完整阅读最近 10 轮对话，只生成一条长期记忆总结，不要注入或模仿任何 AI 角色设定，不要用角色口吻。
 
@@ -1674,20 +1690,20 @@ async function extractStructuredMemoriesFromMessages(messages) {
 1. 必须使用第一人称“我”称呼自己。
 2. 必须使用用户设定的用户名称「${selfName}」称呼用户，不要写“用户”。
 3. 必须从第一人称视角完整总结这 10 轮对话中的内容。
-4. 必须包含当前年月日和时间「${currentDateTime}」，时间精确到分钟。
-5. 必须完整精确总结，禁止过滤任何聊天内容，包括闲聊、情绪表达和重复信息。
-6. 字数尽可能控制在 150 字以内。
-7. 必须使用中文。
-8. 只输出 1 条记忆，不要拆分为多个记忆分区。
-9. keywords 输出 3-5 个中文关键词，importance 必须是 1-10 的整数。
-10. 不要输出任何解释，不要使用 Markdown。
+4. 对话全文中每条用户消息前的方括号时间是该消息的准确发送时间。不得把总结生成时的当前时间当作对话时间，也不得使用“我在x年x月x日 HH:MM和${selfName}进行了一段对话”或同义句作为固定开头。
+5. 根据对话中实际发生的时间点按时间线总结；遇到日期或时刻变化时，必须明确写出对应的年月日和精确到分钟的时间。例如：“2026年9月27日，${selfName}在早上9:00吃了早饭，中午12:00和我分享了一件趣事。”
+6. 必须完整精确总结，禁止过滤任何聊天内容，包括闲聊、情绪表达和重复信息；字数尽可能控制在150字以内。
+7. 必须使用中文，只输出一条长期记忆，不要拆分为多个记忆分区。
+8. 将对话视为我和${selfName}之间真实发生的事。禁止使用“用户扮演…、我扮演…、角色扮演、描写”及同类上帝视角或元叙事表达。
+9. 禁止给整段对话定调或评价，例如“整段对话充满欢乐”“整段对话十分激烈”及同类概括。
+10. keywords 输出3-5个中文关键词，importance 必须是1-10的整数。不要输出任何解释或 Markdown。
 
 只返回以下 JSON 结构：
 {
   "memories": [
     {
       "room": "long_term",
-      "content": "我在${currentDateTime}和${selfName}聊了……",
+      "content": "2026年9月27日，${selfName}在早上9:00吃了早饭，中午12:00和我分享了一件趣事。",
       "keywords": ["对话", "总结", "记忆"],
       "importance": 8
     }
@@ -1698,9 +1714,6 @@ async function extractStructuredMemoriesFromMessages(messages) {
   const userPrompt = `
 [用户名称]
 ${selfName}
-
-[当前时间]
-${currentDateTime}
 
 [最近 10 轮对话全文]
 ${transcript || "无"}
@@ -4357,25 +4370,19 @@ async function requestAssistantReply(
     console.error("注意事项读取失败", error);
   }
 
-  const hiddenTimePrefix = buildHiddenTimePrefix(new Date());
   const windowMessages = getSlidingWindowMessagesFromList(historyMessages, MAX_CONTEXT_MESSAGES).map(
-    (message) => ({
-      role: message.role === "assistant" ? "assistant" : "user",
-      content: message.content,
-    })
-  );
-  const latestUserIndex = (() => {
-    for (let index = windowMessages.length - 1; index >= 0; index -= 1) {
-      if (windowMessages[index]?.role === "user") {
-        return index;
-      }
+    (message) => {
+      const role = message.role === "assistant" ? "assistant" : "user";
+      const content = String(message.content || "");
+      return {
+        role,
+        content:
+          role === "user"
+            ? `${buildHiddenTimePrefix(getMessageTimeContext(message))}\n${content}`
+            : content,
+      };
     }
-    return -1;
-  })();
-  if (latestUserIndex >= 0) {
-    const originalContent = String(windowMessages[latestUserIndex].content || "");
-    windowMessages[latestUserIndex].content = `${hiddenTimePrefix}\n${originalContent}`;
-  }
+  );
 
   const apiMessages = [
     {
