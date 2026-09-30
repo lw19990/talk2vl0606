@@ -246,6 +246,23 @@
           </label>
         </div>
 
+        <div class="api-subsection">
+          <p class="api-subsection-title">数据备份</p>
+          <p class="api-subsection-hint">
+            导出当前全部聊天数据、角色设定、记忆、世界书、API 配置与 MCP 服务器配置；导入时会覆盖当前所有数据。
+          </p>
+          <div class="memory-actions">
+            <button class="secondary-btn" id="export-backup-btn" type="button">导出备份</button>
+            <button class="secondary-btn" id="import-backup-btn" type="button">导入备份</button>
+          </div>
+          <input
+            id="backup-import-input"
+            type="file"
+            accept="*/*,.json,application/json,text/plain,.txt"
+            hidden
+          />
+        </div>
+
         <button class="primary-save" id="save-api-btn" type="button">保存</button>
       </div>
     </div>
