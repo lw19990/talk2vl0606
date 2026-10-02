@@ -47,6 +47,7 @@ const ROOM_LABELS = {
 };
 
 const DEFAULT_STATE = {
+  stateRevision: 0,
   profile: {
     partnerName: "与你对话的人",
     partnerPrompt: "",
@@ -372,6 +373,12 @@ function normalizeMessageRecord(raw = {}) {
     content: String(raw.content || ""),
     thinking: String(raw.thinking || ""),
     toolsUsed: Array.isArray(raw.toolsUsed) ? raw.toolsUsed : [],
+    request_context: raw.request_context && Array.isArray(raw.request_context.message_ids)
+      ? {
+          message_ids: raw.request_context.message_ids.map(String),
+          created_at: normalizeTimestamp(raw.request_context.created_at, 0),
+        }
+      : null,
     timestamp: String(raw.timestamp || formatTime(new Date())),
     time_context_at: raw.time_context_at
       ? normalizeTimestamp(raw.time_context_at, 0)
@@ -434,6 +441,7 @@ function normalizeMcpConfig(raw = {}) {
 
 function normalizeState(raw) {
   return {
+    stateRevision: Number(raw?.stateRevision) || 0,
     profile: {
       ...DEFAULT_STATE.profile,
       ...(raw?.profile || {}),
@@ -1243,6 +1251,7 @@ async function triggerBackgroundMessage() {
       .slice(0, -1)
       .concat([createMessage("user", syntheticPrompt, "")]);
     const result = await requestAssistantReply(syntheticPrompt, historyForRequest, {
+      contextMessage: assistantMessage,
       onProgress: (partial) => {
         updateStreamingAssistantMessage(
           assistantMessage,
@@ -1255,7 +1264,7 @@ async function triggerBackgroundMessage() {
     assistantMessage.thinking = result.thinking;
     assistantMessage.toolsUsed = result.toolsUsed || [];
     renderMessages();
-    await writeState();
+    await saveReplyState();
     try {
       await showBrowserNotification(
         appState.profile?.partnerName?.trim() || "后台消息",
@@ -1279,7 +1288,7 @@ async function triggerBackgroundMessage() {
     assistantMessage.content = `请求失败：${error.message || "未知错误"}`;
     assistantMessage.thinking = "这次后台消息未能成功返回思考链内容。";
     renderMessages();
-    await writeState();
+    await saveReplyState();
     await planNextBackgroundMessageRun(true);
     showChatStatus("后台消息触发失败，已自动安排下一次重试。", 3600);
   } finally {
@@ -1322,14 +1331,41 @@ function readState(db) {
 }
 
 function writeState() {
-  if (!dbRef) return Promise.resolve();
+  if (!dbRef) return Promise.reject(new Error("聊天数据库不可用，请刷新后重试。"));
+  // Snapshot at invocation; later streaming/UI changes belong to a later save.
+  const snapshot = JSON.parse(JSON.stringify(appState));
   return new Promise((resolve, reject) => {
     const tx = dbRef.transaction(APP_STATE_STORE, "readwrite");
     const store = tx.objectStore(APP_STATE_STORE);
-    store.put(appState, STATE_KEY);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    let conflictError = null;
+    const req = store.get(STATE_KEY);
+    req.onsuccess = () => {
+      const storedRevision = Number(req.result?.stateRevision) || 0;
+      if (storedRevision > (Number(appState.stateRevision) || 0)) {
+        conflictError = new Error("另一个页面已更新聊天记录，请刷新当前页面后重试，避免覆盖新对话。");
+        showChatStatus(conflictError.message, 8000);
+        tx.abort();
+        return;
+      }
+      snapshot.stateRevision = storedRevision + 1;
+      store.put(snapshot, STATE_KEY);
+    };
+    tx.oncomplete = () => {
+      appState.stateRevision = snapshot.stateRevision;
+      resolve();
+    };
+    tx.onerror = () => reject(conflictError || tx.error);
+    tx.onabort = () => reject(conflictError || tx.error || new Error("聊天记录保存已中止。"));
   });
+}
+
+async function saveReplyState() {
+  try {
+    await writeState();
+  } catch (error) {
+    console.error("聊天记录保存失败", error);
+    showChatStatus(`聊天记录未保存：${error.message || "未知错误"}`, 8000);
+  }
 }
 
 function getMemoryRecord(id) {
@@ -1589,7 +1625,10 @@ function buildWorldbookContext() {
 
 function getSlidingWindowMessagesFromList(messages, limit = MAX_CONTEXT_MESSAGES) {
   const list = Array.isArray(messages) ? messages : [];
-  return list.slice(-limit);
+  // An interrupted generation can leave a saved empty placeholder, not a turn.
+  return list.filter((message) =>
+    message.role !== "assistant" || String(message.content || "").trim()
+  ).slice(-limit);
 }
 
 function getSlidingWindowMessages(limit = MAX_CONTEXT_MESSAGES) {
@@ -3340,6 +3379,10 @@ function toggleBulkMessageSelection(messageId) {
 }
 
 async function deleteSelectedMessages() {
+  if (replyRequestInFlight) {
+    showChatStatus("请等待回复完成后再删除聊天记录。", 3200);
+    return;
+  }
   if (!bulkSelectedMessageIds.size) return;
   appState.messages = appState.messages.filter((message) => !bulkSelectedMessageIds.has(message.id));
   exitBulkDeleteMode();
@@ -3373,6 +3416,10 @@ function closeMessageEditModal() {
 }
 
 async function saveEditedMessage() {
+  if (replyRequestInFlight) {
+    showChatStatus("请等待回复完成后再编辑聊天记录。", 3200);
+    return;
+  }
   const nextContent = dom.messageEditInput.value.trim();
   if (!editingMessageId) return;
   if (!nextContent) {
@@ -3418,17 +3465,16 @@ async function retryAssistantMessage(messageId) {
 
   activeMessageMenuId = "";
   messageMenuOpenedAt = 0;
-  appState.messages.splice(messageIndex, 1);
-  renderMessages({ preserveScroll: true });
-  await writeState();
   setSending(true);
   replyRequestInFlight = true;
   const placeholderMessage = createMessage("assistant", "", "");
-  appState.messages.splice(messageIndex, 0, placeholderMessage);
+  appState.messages.splice(messageIndex, 1, placeholderMessage);
   renderMessages();
 
   try {
+    await writeState();
     const result = await requestAssistantReply(latestUserMessage.content, historyBefore, {
+      contextMessage: placeholderMessage,
       onProgress: (partial) => {
         updateStreamingAssistantMessage(
           placeholderMessage,
@@ -3441,14 +3487,14 @@ async function retryAssistantMessage(messageId) {
     placeholderMessage.thinking = result.thinking;
     placeholderMessage.toolsUsed = result.toolsUsed || [];
     renderMessages();
-    await writeState();
+    await saveReplyState();
     showChatStatus("已重新生成这条 AI 消息。");
   } catch (error) {
     console.error(error);
     placeholderMessage.content = `请求失败：${error.message || "未知错误"}`;
     placeholderMessage.thinking = "这次重试没有成功返回思考链内容。";
     renderMessages();
-    await writeState();
+    await saveReplyState();
     showChatStatus("重试失败。", 3200);
   } finally {
     replyRequestInFlight = false;
@@ -4412,6 +4458,29 @@ async function requestAssistantReply(
     throw new Error("请先在工具箱 > 设置 中补全 Base URL、API Key 和模型名称。");
   }
 
+  // Freeze the actual request history before asynchronous memory retrieval.
+  const contextMessages = getSlidingWindowMessagesFromList(historyMessages, MAX_CONTEXT_MESSAGES);
+  if (options.contextMessage) {
+    // Exported backups can verify the real outgoing context without relying on
+    // a model's recollection or storing another copy of conversation content.
+    options.contextMessage.request_context = {
+      message_ids: contextMessages.map((message) => String(message.id || "")),
+      created_at: Date.now(),
+    };
+  }
+  const windowMessages = contextMessages.map(
+    (message) => {
+      const role = message.role === "assistant" ? "assistant" : "user";
+      const content = String(message.content || "");
+      return {
+        role,
+        content: role === "user"
+          ? `${buildHiddenTimePrefix(getMessageTimeContext(message))}\n${content}`
+          : content,
+      };
+    }
+  );
+
   let memoryContext = "";
   let fixedNoticeContext = "";
   try {
@@ -4424,20 +4493,6 @@ async function requestAssistantReply(
   } catch (error) {
     console.error("注意事项读取失败", error);
   }
-
-  const windowMessages = getSlidingWindowMessagesFromList(historyMessages, MAX_CONTEXT_MESSAGES).map(
-    (message) => {
-      const role = message.role === "assistant" ? "assistant" : "user";
-      const content = String(message.content || "");
-      return {
-        role,
-        content:
-          role === "user"
-            ? `${buildHiddenTimePrefix(getMessageTimeContext(message))}\n${content}`
-            : content,
-      };
-    }
-  );
 
   const apiMessages = [
     {
@@ -4594,25 +4649,26 @@ async function handleSendMessage(event) {
   if (!text) return;
   if (replyRequestInFlight) return;
 
+  replyRequestInFlight = true;
+  setSending(true);
   closeMessageMenu();
   const userMessage = createMessage("user", text, "");
 
   appState.messages.push(userMessage);
   renderMessages();
-  await writeState();
   vibrateDevice(200);
 
   dom.messageInput.value = "";
   autoGrowTextarea();
-  setSending(true);
-  replyRequestInFlight = true;
   const historyForRequest = appState.messages.slice();
   const assistantMessage = createMessage("assistant", "", "");
   appState.messages.push(assistantMessage);
   renderMessages();
 
   try {
+    await writeState();
     const result = await requestAssistantReply(text, historyForRequest, {
+      contextMessage: assistantMessage,
       onProgress: (partial) => {
         updateStreamingAssistantMessage(
           assistantMessage,
@@ -4627,7 +4683,7 @@ async function handleSendMessage(event) {
     renderMessages();
     await waitForNextFrame();
     vibrateDevice(200);
-    await writeState();
+    await saveReplyState();
     window.setTimeout(() => {
       void maybeRunAutoMemorySummary();
     }, 0);
@@ -4636,7 +4692,7 @@ async function handleSendMessage(event) {
     assistantMessage.content = `请求失败：${error.message || "未知错误"}`;
     assistantMessage.thinking = "这次请求没有成功返回思考链内容。";
     renderMessages();
-    await writeState();
+    await saveReplyState();
   } finally {
     replyRequestInFlight = false;
     setSending(false);
@@ -4900,6 +4956,9 @@ async function exportBackup() {
 }
 
 async function importBackupPayload(payload) {
+  if (replyRequestInFlight) {
+    throw new Error("请等待回复完成后再导入备份。");
+  }
   if (!payload || typeof payload !== "object") {
     throw new Error("备份文件格式无效。");
   }
@@ -4914,7 +4973,9 @@ async function importBackupPayload(payload) {
   const rawState = payload.app_state || payload.appState || payload.state || payload;
   const rawMemories = Array.isArray(payload.memories) ? payload.memories : [];
 
+  const stateRevision = appState.stateRevision;
   appState = normalizeState(rawState);
+  appState.stateRevision = stateRevision;
   await clearAllMemoryRecords();
 
   let importedMemories = 0;
@@ -5511,13 +5572,20 @@ async function initializeApp() {
     dbRef = await initDB();
     const saved = await readState(dbRef);
     appState = normalizeState(saved || DEFAULT_STATE);
-    await maintainMemoryRecords();
   } catch (error) {
     console.error("IndexedDB 初始化失败", error);
+    // Never overwrite an unread database with an empty default state.
+    dbRef = null;
     appState =
       typeof structuredClone === "function"
         ? structuredClone(DEFAULT_STATE)
         : JSON.parse(JSON.stringify(DEFAULT_STATE));
+  }
+
+  try {
+    await maintainMemoryRecords();
+  } catch (error) {
+    console.error("记忆库维护失败，保留已加载的聊天记录", error);
   }
 
   renderProfile();
